@@ -1,0 +1,302 @@
+From b969e1d8eb27e72eee131c1d31398fc3e6ef9c25 Mon Sep 17 00:00:00 2001
+From: "marius a. eriksen" <marius@grailbio.com>
+Date: Wed, 7 Nov 2018 11:44:05 -0800
+Subject: [PATCH] reflow/syntax: permit file and dir module arguments via flags
+
+Summary:
+This change adds support for flag-injected values for file and
+dir-typed module parameters. We include special support to recognize
+expressions of the type file(<const>) and dir(<const>).
+
+This helps us abstract file paths fully from externally-invoked
+Reflow modules and will allow the pipeline infrastructure to inject
+inputs directly.
+
+Reviewers: pgopal, smahadevan, spolakh
+
+Reviewed By: smahadevan
+
+Differential Revision: https://phabricator.grailbio.com/D21214
+---
+ go/src/github.com/grailbio/reflow/syntax/BUILD     |  1 +
+ go/src/github.com/grailbio/reflow/syntax/module.go | 76 ++++++++++++++++++----
+ .../grailbio/reflow/syntax/module_test.go          | 52 +++++++++++++++
+ .../grailbio/reflow/syntax/testdata/flag.rf        | 10 +++
+ go/src/github.com/grailbio/reflow/tool/eval.go     |  1 -
+ go/src/github.com/grailbio/reflow/values/env.go    | 17 +++++
+ 6 files changed, 145 insertions(+), 12 deletions(-)
+ create mode 100644 go/src/github.com/grailbio/reflow/syntax/module_test.go
+ create mode 100644 go/src/github.com/grailbio/reflow/syntax/testdata/flag.rf
+
+diff --git a/go/src/github.com/grailbio/reflow/syntax/BUILD b/go/src/github.com/grailbio/reflow/syntax/BUILD
+index 86feb7e84b..07a2f4bb7e 100644
+--- a/go/src/github.com/grailbio/reflow/syntax/BUILD
++++ b/go/src/github.com/grailbio/reflow/syntax/BUILD
+@@ -49,6 +49,7 @@ go_test(
+         "bundle_test.go",
+         "digest_test.go",
+         "eval_test.go",
++        "module_test.go",
+         "parse_test.go",
+         "pat_test.go",
+         "reqs_test.go",
+diff --git a/go/src/github.com/grailbio/reflow/syntax/module.go b/go/src/github.com/grailbio/reflow/syntax/module.go
+index 9fde867d2a..0723e7470a 100644
+--- a/go/src/github.com/grailbio/reflow/syntax/module.go
++++ b/go/src/github.com/grailbio/reflow/syntax/module.go
+@@ -85,6 +85,7 @@ type ModuleImpl struct {
+ 	tenv   *types.Env
+ 
+ 	injectedArgs []string
++	flags        *flag.FlagSet
+ 	fenv         *values.Env
+ 	ftenv        *types.Env
+ 
+@@ -260,15 +261,21 @@ func (m *ModuleImpl) Flags(sess *Session, env *values.Env) (*flag.FlagSet, error
+ 					flags.Float64(p.Ident, fl, help)
+ 				case types.BoolKind:
+ 					flags.Bool(p.Ident, v.(bool), help)
++				case types.FileKind, types.DirKind:
++					// Hack to sneak in flag values as-defined.
++					// TODO(marius): rethink how injected args interact
++					// with the flag environment and default values. This ought
++					// to be simpler.
++					flags.String(p.Ident, m.flags.Lookup(p.Ident).Value.String(), help)
+ 				default:
+-					return nil, fmt.Errorf("-%s: flags of type %s not supported (valid types are: string, int, bool, and float)", p.Ident, p.Type)
++					return nil, fmt.Errorf("-%s: flags of type %s not supported (valid types are: string, int, bool)", p.Ident, p.Type)
+ 				}
+ 			} else {
+ 				if p.Type.Kind != types.BoolKind {
+ 					help += "(required)"
+ 				}
+ 				switch p.Type.Kind {
+-				case types.StringKind:
++				case types.StringKind, types.FileKind, types.DirKind:
+ 					flags.String(p.Ident, "", help)
+ 				case types.IntKind:
+ 					flags.Int(p.Ident, 0, help)
+@@ -302,14 +309,30 @@ func (m *ModuleImpl) Flags(sess *Session, env *values.Env) (*flag.FlagSet, error
+ 				env.Bind(id, w)
+ 				switch tenv.Type(id).Kind {
+ 				case types.StringKind:
+-					flags.String(id, w.(string), p.Comment)
++					flags.String(id, v.(string), p.Comment)
+ 				case types.IntKind:
+-					flags.Uint64(id, w.(*big.Int).Uint64(), p.Comment)
++					flags.Uint64(id, v.(*big.Int).Uint64(), p.Comment)
+ 				case types.FloatKind:
+-					f, _ := w.(*big.Float).Float64()
+-					flags.Float64(id, f, p.Comment)
++					fl, _ := v.(*big.Float).Float64()
++					flags.Float64(id, fl, p.Comment)
+ 				case types.BoolKind:
+-					flags.Bool(id, w.(bool), p.Comment)
++					flags.Bool(id, v.(bool), p.Comment)
++				case types.FileKind, types.DirKind:
++					if p.Expr.Kind != ExprApply || p.Expr.Left.Kind != ExprIdent || (p.Expr.Left.Ident != "file" && p.Expr.Left.Ident != "dir") {
++						break
++					}
++					// TODO(marius): dismiss predicates for params that are
++					// themselves not exposed as flags.
++					if !p.Expr.Fields[0].Type.IsConst(nil) {
++						break
++					}
++					// In this case, we can safely evaluate the field (to a string), and
++					v, err := p.Expr.Fields[0].eval(sess, env, p.ID(""))
++					if err != nil {
++						// Impossible for const expressions.
++						panic(err)
++					}
++					flags.String(id, v.(string), p.Comment)
+ 				}
+ 			}
+ 		}
+@@ -359,6 +382,32 @@ func (m *ModuleImpl) flagEnv(needMandatory bool, flags *flag.FlagSet, venv *valu
+ 			venv.Bind(f.Name, v)
+ 		case types.BoolKind:
+ 			venv.Bind(f.Name, f.Value.String() == "true")
++		case types.FileKind, types.DirKind:
++			ident := "file"
++			if t.Kind == types.DirKind {
++				ident = "dir"
++			}
++			e := &Expr{
++				Kind: ExprApply,
++				Left: &Expr{
++					Kind:  ExprIdent,
++					Ident: ident,
++				},
++				Fields: []*FieldExpr{
++					{
++						Expr: &Expr{
++							Kind: ExprLit,
++							Val:  values.T(f.Value.String()),
++						},
++					},
++				},
++			}
++			_, evalvenv := Stdlib()
++			v, err := e.eval(nil, evalvenv, f.Name)
++			if err != nil {
++				panic(err)
++			}
++			venv.Bind(f.Name, v)
+ 		default:
+ 			return
+ 		}
+@@ -389,14 +438,18 @@ func (m *ModuleImpl) Make(sess *Session, params *values.Env) (values.T, error) {
+ 		case DeclDeclare:
+ 			// value is already bound in params.
+ 		case DeclAssign:
+-			v, err := p.Expr.eval(sess, env, "")
+-			if err != nil {
+-				return nil, err
+-			}
++			var v values.T
+ 			env = env.Push()
+ 			for id, m := range p.Pat.Matchers() {
+ 				// Passed parameters override definitions.
+ 				if !params.Contains(id) {
++					if v == nil {
++						var err error
++						v, err = p.Expr.eval(sess, env, "")
++						if err != nil {
++							return nil, err
++						}
++					}
+ 					w, err := coerceMatch(v, p.Type, p.Pat.Position, m.Path())
+ 					if err != nil {
+ 						return nil, err
+@@ -525,6 +578,7 @@ func (m *ModuleImpl) InjectArgs(sess *Session, args []string) error {
+ 	if err := flags.Parse(args); err != nil {
+ 		return err
+ 	}
++	m.flags = flags
+ 	m.fenv = m.fenv.Push()
+ 	m.ftenv = m.ftenv.Push()
+ 	m.injectedArgs = args
+diff --git a/go/src/github.com/grailbio/reflow/syntax/module_test.go b/go/src/github.com/grailbio/reflow/syntax/module_test.go
+new file mode 100644
+index 0000000000..90feb3e159
+--- /dev/null
++++ b/go/src/github.com/grailbio/reflow/syntax/module_test.go
+@@ -0,0 +1,52 @@
++// Copyright 2018 GRAIL, Inc. All rights reserved.
++// Use of this source code is governed by the Apache 2.0
++// license that can be found in the LICENSE file.
++package syntax
++
++import (
++	"testing"
++
++	"github.com/grailbio/reflow/flow"
++)
++
++func TestModuleFlag(t *testing.T) {
++	sess := NewSession(nil)
++	m, err := sess.Open("testdata/flag.rf")
++	if err != nil {
++		t.Fatal(err)
++	}
++	tenv, venv := Stdlib()
++	fs, err := m.Flags(sess, venv.Push())
++	if err != nil {
++		t.Fatal(err)
++	}
++	if fs.Lookup("notFlag") != nil {
++		t.Error("unexpected notFlag")
++	}
++	for _, test := range []struct{ F, V string }{{"y", "/dev/null"}, {"z", "."}} {
++		f := fs.Lookup(test.F)
++		if got, want := f.Value.String(), test.V; got != want {
++			t.Errorf("got %q, want %q", got, want)
++		}
++	}
++	if got, want := m.FlagEnv(fs, venv, tenv).Error(), "missing mandatory flag -x"; got != want {
++		t.Errorf("got %q, want %q", got, want)
++	}
++	fs.Lookup("x").Value.Set("blah")
++	fs.Lookup("y").Value.Set("localfile://notexist")
++	if err := m.FlagEnv(fs, venv, tenv); err != nil {
++		t.Fatal(err)
++	}
++	// Verify by examining the produced flow graph that the flag
++	// was evaluated correctly.
++	intern := venv.Value("y").(*flow.Flow).Visitor()
++	for intern.Walk() && intern.Op != flow.Intern {
++		intern.Visit()
++	}
++	if intern.Op != flow.Intern {
++		t.Fatal("no intern node produced")
++	}
++	if got, want := intern.URL.String(), "localfile://notexist"; got != want {
++		t.Errorf("got %q, want %q", got, want)
++	}
++}
+diff --git a/go/src/github.com/grailbio/reflow/syntax/testdata/flag.rf b/go/src/github.com/grailbio/reflow/syntax/testdata/flag.rf
+new file mode 100644
+index 0000000000..9f0a260a59
+--- /dev/null
++++ b/go/src/github.com/grailbio/reflow/syntax/testdata/flag.rf
+@@ -0,0 +1,10 @@
++param (
++	x string
++	y = file("/dev/null")
++	z = dir(".")
++	notFlag = {x: 1, y: 2}
++)
++
++val X = x
++val Y = y
++val Z = z
+diff --git a/go/src/github.com/grailbio/reflow/tool/eval.go b/go/src/github.com/grailbio/reflow/tool/eval.go
+index b8c71c9866..11ac8a3a58 100644
+--- a/go/src/github.com/grailbio/reflow/tool/eval.go
++++ b/go/src/github.com/grailbio/reflow/tool/eval.go
+@@ -148,7 +148,6 @@ func (c *Cmd) evalV1(sess *syntax.Session, e *Eval) error {
+ 		fmt.Fprintln(os.Stderr, err)
+ 		flags.Usage()
+ 	}
+-
+ 	v, err := m.Make(sess, env)
+ 	if err != nil {
+ 		return err
+diff --git a/go/src/github.com/grailbio/reflow/values/env.go b/go/src/github.com/grailbio/reflow/values/env.go
+index cf6beb976e..5cae311d3e 100644
+--- a/go/src/github.com/grailbio/reflow/values/env.go
++++ b/go/src/github.com/grailbio/reflow/values/env.go
+@@ -5,6 +5,8 @@
+ package values
+ 
+ import (
++	"fmt"
++
+ 	"github.com/grailbio/base/digest"
+ 	"github.com/grailbio/reflow/types"
+ )
+@@ -31,6 +33,21 @@ func (e *Env) Bind(id string, v T) {
+ 	e.Symtab[id] = v
+ }
+ 
++// String returns a string describing all the bindings in this
++// environment.
++func (e *Env) String() string {
++	tab := make(Symtab)
++	for ; e != nil; e = e.next {
++		for id, v := range e.Symtab {
++			_, ok := tab[id]
++			if !ok {
++				tab[id] = v
++			}
++		}
++	}
++	return fmt.Sprint(tab)
++}
++
+ type digester interface {
+ 	Digest() digest.Digest
+ }
+-- 
+2.14.2
+
