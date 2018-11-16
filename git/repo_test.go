@@ -32,8 +32,14 @@ func TestLog(t *testing.T) {
 		git commit -m'second commit'
 		git push
 	`)
-	repo := Open(filepath.Join(dir, "repo"), "adir/", "master")
-	commits := repo.Log()
+	repo, err := Open(filepath.Join(dir, "repo"), "adir/", "master")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commits, err := repo.Log()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got, want := len(commits), 1; got != want {
 		t.Fatalf("got %v, want %v", got, want)
 	}
@@ -41,7 +47,10 @@ func TestLog(t *testing.T) {
 	if got, want := c.Title(), "first commit"; got != want {
 		t.Errorf("got %v, want %v", got, want)
 	}
-	patch := repo.Patch(c.Digest)
+	patch, err := repo.Patch(c.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got, want := patch.Subject, "[PATCH] first commit"; got != want {
 		t.Errorf("got %v, want %v", got, want)
 	}

@@ -35,8 +35,7 @@ When run, grit checks out the desired repositories in a local cache
 are rewritten before they are applied: prefixes are removed as appropriate
 and files named BUILD are omitted.
 
-It is not safe to run concurrent invocations of grit on the same machine.
-`)
+It is safe to run concurrent invocations of grit on the same machine.`)
 	flag.PrintDefaults()
 	os.Exit(2)
 }
@@ -60,24 +59,43 @@ func main() {
 	if dstPrefix != "" {
 		log.Fatal("destination prefixes not yet supported")
 	}
-
-	src := git.Open(srcURL, srcPrefix, srcBranch)
-	dst := git.Open(dstURL, dstPrefix, dstBranch)
+	src, err := git.Open(srcURL, srcPrefix, srcBranch)
+	if err != nil {
+		log.Fatalf("open %s: %v", srcURL, err)
+	}
+	defer src.Close()
+	dst, err := git.Open(dstURL, dstPrefix, dstBranch)
+	if err != nil {
+		log.Fatalf("open %s: %v", dstURL, err)
+	}
+	defer dst.Close()
 
 	// Last synchronized commit, if any.
-	last := dst.Log("-1", "--grep", `^\(fb\)\?shipit-source-id: [a-z0-9]\+$`)
+	last, err := dst.Log("-1", "--grep", `^\(fb\)\?shipit-source-id: [a-z0-9]\+$`)
+	if err != nil {
+		log.Fatalf("log %s: %v", dst, err)
+	}
 	var commits []*git.Commit
 	if len(last) == 0 {
 		log.Printf("performing initial sync")
-		commits = src.Log("--no-merges")
+		commits, err = src.Log("--no-merges")
+		if err != nil {
+			log.Fatalf("log %s: %v", src, err)
+		}
 	} else {
 		log.Printf("synchronizing: last diff: %v, source: %v", last[0].Digest, last[0].ShipitID())
-		commits = src.Log(last[0].ShipitID()+"..master", "--ancestry-path", "--no-merges")
+		commits, err = src.Log(last[0].ShipitID()+"..master", "--ancestry-path", "--no-merges")
+		if err != nil {
+			log.Fatalf("log %s: %v", src, err)
+		}
 	}
 	log.Printf("%d commits to copy", len(commits))
 	for i := len(commits) - 1; i >= 0; i-- {
 		c := commits[i]
-		patch := src.Patch(c.Digest)
+		patch, err := src.Patch(c.Digest)
+		if err != nil {
+			log.Fatalf("%s: patch %s: %v", src, c.Digest.Hex()[:7], err)
+		}
 		if patch.Body != "" {
 			patch.Body += "\n\n"
 		}
@@ -103,12 +121,16 @@ func main() {
 			}
 		} else {
 			log.Printf("applying %s", c)
-			dst.Apply(patch)
+			if err := dst.Apply(patch); err != nil {
+				log.Fatalf("%s: apply %s: %s", dst, patch, err)
+			}
 		}
 	}
 	if !*dump && *push {
 		log.Printf("pushing changes to %s %s", dstURL, dstBranch)
-		dst.Push("origin", dstBranch)
+		if err := dst.Push("origin", dstBranch); err != nil {
+			log.Fatalf("%s: push origin %s: %v", dst, dstBranch, err)
+		}
 	}
 }
 

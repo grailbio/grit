@@ -39,14 +39,15 @@ type Repo struct {
 	branch string
 	root   string
 	prefix string
+	lock   *flock
 }
 
 // Open returns a repo representing the provided git remote url, branch, and
 // prefix within the repository. The prefix is interpreted to provide
 // a "view" into the git repository: all operations apply only to
-// this prefix. Repositories are not safe for concurrent operations
-// even across multiple uses on the same machine.
-func Open(url, prefix, branch string) *Repo {
+// this prefix. Repositories are safe for concurrent operations
+// across multiple uses on the same machine.
+func Open(url, prefix, branch string) (*Repo, error) {
 	base := filepath.Base(url)
 	base = strings.TrimSuffix(base, filepath.Ext(base))
 	h := sha256.New()
@@ -55,26 +56,50 @@ func Open(url, prefix, branch string) *Repo {
 	path := filepath.Join(Dir, fmt.Sprintf("%s%02x%02x%02x%02x", base, b[0], b[1], b[2], b[3]))
 	_, err := os.Stat(path)
 	if err != nil && !os.IsNotExist(err) {
-		log.Fatalf("stat %s: %v", path, err)
+		return nil, err
 	}
 	r := &Repo{url: url, root: path, prefix: prefix, branch: branch}
+	r.lock = newFlock(path + ".lock")
+	if err := r.lock.Lock(); err != nil {
+		return nil, fmt.Errorf("lock %s: %v", path, err)
+	}
 	if err != nil {
 		os.MkdirAll(path, 0777)
-		r.git(nil, "clone", "--single-branch", r.url, r.root)
+		if _, err := r.git(nil, "clone", "--single-branch", r.url, r.root); err != nil {
+			return nil, err
+		}
 	}
-	r.git(nil, "fetch", "origin", branch)
-	r.git(nil, "reset", "--hard", "FETCH_HEAD")
-	return r
+	if _, err := r.git(nil, "fetch", "origin", branch); err != nil {
+		return nil, err
+	}
+	if _, err := r.git(nil, "reset", "--hard", "FETCH_HEAD"); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (r *Repo) String() string {
+	return fmt.Sprintf("%s,%s,%s", r.url, r.prefix, r.branch)
+}
+
+// Close relinquishes the repo's lock. Repo operations may not
+// be safely performed after the repository has been closed.
+func (r *Repo) Close() error {
+	return r.lock.Unlock()
 }
 
 // Log returns a set of commit objects representing the "git log" operation
 // with the provided arguments.
-func (r *Repo) Log(args ...string) (commits []*Commit) {
+func (r *Repo) Log(args ...string) (commits []*Commit, err error) {
 	args = append([]string{"log"}, args...)
 	if r.prefix != "" {
 		args = append(args, r.prefix)
 	}
-	foreach(r.git(nil, args...), "commit", func(commit []byte) error {
+	out, err := r.git(nil, args...)
+	if err != nil {
+		return nil, err
+	}
+	err = foreach(out, "commit", func(commit []byte) error {
 		c := &Commit{repo: r}
 		headers := scan(&commit, "\n")
 		digest := scanLine(&headers)
@@ -82,7 +107,7 @@ func (r *Repo) Log(args ...string) (commits []*Commit) {
 		var err error
 		c.Digest, err = digester.Parse(string(digest))
 		if err != nil {
-			log.Fatalf("invalid commit digest %v: %v", digest, err)
+			return fmt.Errorf("invalid commit digest %v: %v", digest, err)
 		}
 		for headers != nil {
 			line := scanLine(&headers)
@@ -106,11 +131,14 @@ var (
 
 // Patch returns a patch representing the commit named by the
 // provided ID.
-func (r *Repo) Patch(id digest.Digest) Patch {
-	raw := r.git(nil, "format-patch", "-1", id.Hex(), "--stdout")
+func (r *Repo) Patch(id digest.Digest) (Patch, error) {
+	raw, err := r.git(nil, "format-patch", "-1", id.Hex(), "--stdout")
+	if err != nil {
+		return Patch{}, err
+	}
 	patch, err := parsePatch(raw)
 	if err != nil {
-		log.Fatalf("parse patch %v: %v", id, err)
+		return Patch{}, fmt.Errorf("parse patch %v: %v", id, err)
 	}
 	var diffs []Diff
 	for _, diff := range patch.Diffs {
@@ -140,30 +168,32 @@ func (r *Repo) Patch(id digest.Digest) Patch {
 		}
 	}
 	patch.Diffs = diffs
-	return patch
+	return patch, nil
 }
 
 // Apply applies a patch to the repository.
-func (r *Repo) Apply(patch Patch) {
+func (r *Repo) Apply(patch Patch) error {
 	var b bytes.Buffer
 	if err := patch.Write(&b); err != nil {
-		log.Fatalf("patch write: %v", err)
+		return fmt.Errorf("patch write: %v", err)
 	}
 	log.Debug.Printf("applying patch %s", patch.ID.Hex()[:7])
-	r.git(b.Bytes(), "am", "--keep-non-patch", "--keep-cr")
+	_, err := r.git(b.Bytes(), "am", "--keep-non-patch", "--keep-cr")
+	return err
 }
 
 // Push pushes the current state of the repository to the provided
 // branch on the provided remote.
-func (r *Repo) Push(remote, remoteBranch string) {
-	r.git(nil, "push", remote, "HEAD:"+remoteBranch)
+func (r *Repo) Push(remote, remoteBranch string) error {
+	_, err := r.git(nil, "push", remote, "HEAD:"+remoteBranch)
+	return err
 }
 
 func (r *Repo) path(elems ...string) string {
 	return filepath.Join(append([]string{r.root}, elems...)...)
 }
 
-func (r *Repo) git(stdin []byte, arg ...string) []byte {
+func (r *Repo) git(stdin []byte, arg ...string) ([]byte, error) {
 	cmd := exec.Command("git", append([]string{"-C", r.root}, arg...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -178,14 +208,14 @@ func (r *Repo) git(stdin []byte, arg ...string) []byte {
 		if len(outerr) > 0 {
 			outerr = "\n" + outerr
 		}
-		log.Fatalf("%s: git %s: error: %v%s", r.root, strings.Join(arg, " "), err, outerr)
+		return nil, fmt.Errorf("%s: git %s: error: %v%s", r.root, strings.Join(arg, " "), err, outerr)
 	}
 	outerr := string(stderr.Bytes())
 	if len(outerr) > 0 {
 		outerr = "\n" + outerr
 	}
 	log.Debug.Printf("%s: git %s: ok%s", r.root, strings.Join(arg, " "), outerr)
-	return stdout.Bytes()
+	return stdout.Bytes(), nil
 }
 
 // Header is a commit header.
