@@ -53,21 +53,34 @@ func main() {
 
 	srcURL, srcPrefix, srcBranch := parseSpec(flag.Arg(0))
 	dstURL, dstPrefix, dstBranch := parseSpec(flag.Arg(1))
+	if srcURL == dstURL {
+		log.Error.Printf("source and destination cannot be the same")
+		flag.Usage()
+	}
 
 	log.Printf("synchronizing repo:%s prefix:%s branch:%s -> repo:%s prefix:%s branch:%s",
 		srcURL, srcPrefix, srcBranch, dstURL, dstPrefix, dstBranch)
 	if dstPrefix != "" {
 		log.Fatal("destination prefixes not yet supported")
 	}
-	src, err := git.Open(srcURL, srcPrefix, srcBranch)
-	if err != nil {
-		log.Fatalf("open %s: %v", srcURL, err)
+	open := func(url, prefix, branch string) *git.Repo {
+		r, err := git.Open(url, prefix, branch)
+		if err != nil {
+			log.Fatalf("open %s: %v", url, err)
+		}
+		return r
+	}
+	// Open repositories in URL order so that we don't deadlock across
+	// multiple repositories.
+	var src, dst *git.Repo
+	if srcURL < dstURL {
+		src = open(srcURL, srcPrefix, srcBranch)
+		dst = open(dstURL, dstPrefix, dstBranch)
+	} else {
+		dst = open(dstURL, dstPrefix, dstBranch)
+		src = open(srcURL, srcPrefix, srcBranch)
 	}
 	defer src.Close()
-	dst, err := git.Open(dstURL, dstPrefix, dstBranch)
-	if err != nil {
-		log.Fatalf("open %s: %v", dstURL, err)
-	}
 	defer dst.Close()
 
 	// Last synchronized commit, if any.
