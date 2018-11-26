@@ -15,7 +15,7 @@ func TestParsePatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	patch, err := parsePatch(b)
+	patch, err := parsePatchHeader(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,7 @@ func TestParsePatch(t *testing.T) {
 	if err := patch.Write(&buf); err != nil {
 		t.Fatal(err)
 	}
-	patch, err = parsePatch(buf.Bytes())
+	patch, err = parsePatchHeader(buf.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,28 +35,6 @@ func TestParsePatch(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 	if got, want := patch.Time.Format(time.Kitchen), "11:44AM"; got != want {
-		t.Errorf("got %v, want %v", got, want)
-	}
-	if got, want := len(patch.Diffs), 6; got != want {
-		t.Errorf("got %v, want %v", got, want)
-	}
-	if got, want := patch.Diffs[0].Path, "go/src/github.com/grailbio/reflow/syntax/BUILD"; got != want {
-		t.Errorf("got %v, want %v", got, want)
-	}
-	if got, want := string(patch.Diffs[0].Meta), `index 86feb7e84b..07a2f4bb7e 100644
---- a/go/src/github.com/grailbio/reflow/syntax/BUILD
-+++ b/go/src/github.com/grailbio/reflow/syntax/BUILD`; got != want {
-		t.Errorf("got %v, want %v", got, want)
-	}
-
-	if got, want := string(patch.Diffs[0].Body), `@@ -49,6 +49,7 @@ go_test(
-         "bundle_test.go",
-         "digest_test.go",
-         "eval_test.go",
-+        "module_test.go",
-         "parse_test.go",
-         "pat_test.go",
-         "reqs_test.go",`; got != want {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }

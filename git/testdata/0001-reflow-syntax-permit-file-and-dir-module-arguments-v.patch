@@ -17,16 +17,6 @@ Reviewers: pgopal, smahadevan, spolakh
 Reviewed By: smahadevan
 
 Differential Revision: https://phabricator.grailbio.com/D21214
----
- go/src/github.com/grailbio/reflow/syntax/BUILD     |  1 +
- go/src/github.com/grailbio/reflow/syntax/module.go | 76 ++++++++++++++++++----
- .../grailbio/reflow/syntax/module_test.go          | 52 +++++++++++++++
- .../grailbio/reflow/syntax/testdata/flag.rf        | 10 +++
- go/src/github.com/grailbio/reflow/tool/eval.go     |  1 -
- go/src/github.com/grailbio/reflow/values/env.go    | 17 +++++
- 6 files changed, 145 insertions(+), 12 deletions(-)
- create mode 100644 go/src/github.com/grailbio/reflow/syntax/module_test.go
- create mode 100644 go/src/github.com/grailbio/reflow/syntax/testdata/flag.rf
 
 diff --git a/go/src/github.com/grailbio/reflow/syntax/BUILD b/go/src/github.com/grailbio/reflow/syntax/BUILD
 index 86feb7e84b..07a2f4bb7e 100644

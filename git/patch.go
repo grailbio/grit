@@ -12,6 +12,7 @@ import (
 	"io/ioutil"
 	"net/mail"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/grailbio/base/digest"
@@ -50,6 +51,18 @@ type Patch struct {
 	Diffs []Diff
 }
 
+func (p Patch) String() string {
+	return fmt.Sprintf("patch %s %s %s %s (%d diffs)",
+		p.ID.Hex()[:7], p.Author, p.Time, p.Subject, len(p.Diffs))
+}
+
+// Patch returns the serialized patch as a string.
+func (p Patch) Patch() string {
+	var b strings.Builder
+	_ = p.Write(&b)
+	return b.String()
+}
+
 // Write serializes the patch to the standard git patch format
 // and writes it to the provided writer.
 func (p Patch) Write(w io.Writer) error {
@@ -72,8 +85,8 @@ func (p Patch) Write(w io.Writer) error {
 var errMalformedPatch = errors.New("malformed patch")
 var continueHeader = []byte(" ")
 
-// ParsePatch parses a patch from the provided buffer.
-func parsePatch(b []byte) (Patch, error) {
+// ParsePatchHead parses a patch header from the provided buffer.
+func parsePatchHeader(b []byte) (Patch, error) {
 	from := scanLine(&b)
 	fields := bytes.Fields(from)
 	if len(fields) < 2 {
@@ -109,23 +122,10 @@ func parsePatch(b []byte) (Patch, error) {
 	}
 	b, err = ioutil.ReadAll(m.Body)
 	if err != nil {
-		panic(err)
+		return Patch{}, err
 	}
-	p.Body = string(scan(&b, "---\n"))
-	// Throw away stats, then iterate over the diffs in the patch.
-	_ = scan(&b, "\n")
-	patch := scan(&b, "-- \n")
-	err = foreach(patch, "diff", func(diff []byte) error {
-		header := scanLine(&diff)
-		path := parseDiffHeader(header)
-		if path == nil {
-			return errors.New("diff is missing header")
-		}
-		meta := next(&diff, "@@")
-		p.Diffs = append(p.Diffs, Diff{Path: string(path), Meta: meta, Body: diff})
-		return nil
-	})
-	return p, err
+	p.Body = string(b)
+	return p, nil
 }
 
 func scan(b *[]byte, prefix string) (body []byte) {

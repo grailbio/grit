@@ -13,6 +13,7 @@ import (
 	"crypto"
 	_ "crypto/sha1"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -40,6 +41,7 @@ type Repo struct {
 	root   string
 	prefix string
 	lock   *flock
+	config map[string]string
 }
 
 // Open returns a repo representing the provided git remote url, branch, and
@@ -88,6 +90,17 @@ func (r *Repo) Close() error {
 	return r.lock.Unlock()
 }
 
+// Configure sets the configuration parameter named by key to
+// the value value. Properties configured this way overrides the
+// Git's defaults (e.g., sourced through a user's .gitconfig) for
+// repo Git invocations.
+func (r *Repo) Configure(key, value string) {
+	if r.config == nil {
+		r.config = make(map[string]string)
+	}
+	r.config[key] = value
+}
+
 // Log returns a set of commit objects representing the "git log" operation
 // with the provided arguments.
 func (r *Repo) Log(args ...string) (commits []*Commit, err error) {
@@ -132,13 +145,41 @@ var (
 // Patch returns a patch representing the commit named by the
 // provided ID.
 func (r *Repo) Patch(id digest.Digest) (Patch, error) {
-	raw, err := r.git(nil, "format-patch", "-1", id.Hex(), "--stdout")
+	// To minimize the amount of parsing we have to do here, first get the
+	// diffs only, and then extract the rest of the message which can be
+	// passed directly as a regular email.
+
+	rawdiffs, err := r.git(nil, "format-patch",
+		"--no-renames", "--no-stat", "--stdout",
+		"--format=", // diff content only
+		"-1", id.Hex(),
+	)
 	if err != nil {
 		return Patch{}, err
 	}
-	patch, err := parsePatch(raw)
+	raw, err := r.git(nil, "format-patch",
+		"--no-renames", "--no-stat", "-1", id.Hex(), "--stdout")
+	if err != nil {
+		return Patch{}, err
+	}
+	raw = bytes.TrimSuffix(raw, rawdiffs)
+	patch, err := parsePatchHeader(raw)
 	if err != nil {
 		return Patch{}, fmt.Errorf("parse patch %v: %v", id, err)
+	}
+
+	err = foreach(rawdiffs, "diff", func(diff []byte) error {
+		header := scanLine(&diff)
+		path := parseDiffHeader(header)
+		if path == nil {
+			return errors.New("diff is missing header")
+		}
+		meta := next(&diff, "@@")
+		patch.Diffs = append(patch.Diffs, Diff{Path: string(path), Meta: meta, Body: diff})
+		return nil
+	})
+	if err != nil {
+		return Patch{}, err
 	}
 	var diffs []Diff
 	for _, diff := range patch.Diffs {
@@ -173,6 +214,9 @@ func (r *Repo) Patch(id digest.Digest) (Patch, error) {
 
 // Apply applies a patch to the repository.
 func (r *Repo) Apply(patch Patch) error {
+	if len(patch.Diffs) == 0 {
+		return nil
+	}
 	var b bytes.Buffer
 	if err := patch.Write(&b); err != nil {
 		return fmt.Errorf("patch write: %v", err)
@@ -194,7 +238,13 @@ func (r *Repo) path(elems ...string) string {
 }
 
 func (r *Repo) git(stdin []byte, arg ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"-C", r.root}, arg...)...)
+	args := []string{"-C", r.root}
+	for k, v := range r.config {
+		args = append(args, "-c")
+		args = append(args, k+"="+v)
+	}
+	args = append(args, arg...)
+	cmd := exec.Command("git", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
