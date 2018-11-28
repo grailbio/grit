@@ -2,13 +2,55 @@
 // Use of this source code is governed by the Apache 2.0
 // license that can be found in the LICENSE file.
 
+// Grit copies commits from a source repository to a destination
+// repository. It is intended to mirror projects residing in an
+// private monorepo to an external project-specific Git repository.
+//
+// Usage:
+//
+// 	grit [-push] [-dump] src dst rules...
+//
+// "grit -push src dst rules..." copies commits from the repository
+// src to the repository dst, applying the the given rules and, if
+// successful, pushes the changes to the destination repository.
+// Repositories are named by url, prefix, and branch, with one of the
+// following syntaxes:
+//
+// 	url
+// 	url,prefix
+// 	url,prefix,branch
+//
+// The default prefix is "" and the default branch is "master". When a
+// prefix is specified, Grit considers constructs a view of the repository
+// limited to the given prefix path. Changes outside of this prefix are
+// discarded.
+//
+// Rules
+//
+// Grit can apply a set of rewrite rules to source commits before
+// they are copied to the destination repository. Rules are specified
+// as "kind:param". Rules kinds are:
+//
+//	strip:regexp
+//		Strips diffs applied to files matching the given regular
+//		expression.
+//
+// Example
+//
+// Copy commits from the "project/" directory in repository
+// ssh://git@git.company.com/foo.git to the root directory in the
+// repository https://github.com/company/project.git. Diffs applied
+// to files named BUILD are skipped.
+//
+// 	grit -push ssh://git@git.company.com/foo.git,project/ \
+//		https://github.com/company/project.git "strip:^BUILD$" "strip:/BUILD$"
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
-	"path"
+	"regexp"
 	"strings"
 
 	"github.com/grailbio/base/log"
@@ -16,26 +58,7 @@ import (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: grit src dst
-
-Grit copies commits from a source repository to a destination
-repository. Src and dst are repository specs of the form:
-	url
-	url,prefix
-	url,prefix,branch
-For example, the spec
-	ssh://git@mycompany.com/diffusion/REPO/repo.git,myproject/
-represents the "myproject" directory in the git repository 
-git@mycompany.com/diffusion/REPO/repo.git accessed over SSH.
-The default prefix is the empty prefix ("") and the default branch is
-"master".
-
-When run, grit checks out the desired repositories in a local cache
-(at /var/tmp/grit), and operates directly on these repositories. Commits
-are rewritten before they are applied: prefixes are removed as appropriate
-and files named BUILD are omitted.
-
-It is safe to run concurrent invocations of grit on the same machine.`)
+	fmt.Fprintln(os.Stderr, `usage: grit src dst rules...`)
 	flag.PrintDefaults()
 	os.Exit(2)
 }
@@ -47,7 +70,7 @@ func main() {
 	push := flag.Bool("push", false, "push applied changes to the destination repository's remote")
 	flag.Usage = usage
 	flag.Parse()
-	if flag.NArg() != 2 {
+	if flag.NArg() < 2 {
 		flag.Usage()
 	}
 
@@ -56,6 +79,23 @@ func main() {
 	if srcURL == dstURL {
 		log.Error.Printf("source and destination cannot be the same")
 		flag.Usage()
+	}
+
+	var strip []*regexp.Regexp
+	rules := flag.Args()[2:]
+	for _, rule := range rules {
+		parts := strings.SplitN(rule, ":", 2)
+		if len(parts) != 2 {
+			log.Fatalf("invalid rule %s", rule)
+		}
+		if parts[0] != "strip" {
+			log.Fatalf("invalid rule type %s", parts[0])
+		}
+		r, err := regexp.Compile(parts[1])
+		if err != nil {
+			log.Fatalf("invalid regexp %s: %s", parts[1], err)
+		}
+		strip = append(strip, r)
 	}
 
 	log.Printf("synchronizing repo:%s prefix:%s branch:%s -> repo:%s prefix:%s branch:%s",
@@ -103,6 +143,7 @@ func main() {
 		}
 	}
 	log.Printf("%d commits to copy", len(commits))
+	var ncommit int
 	for i := len(commits) - 1; i >= 0; i-- {
 		c := commits[i]
 		patch, err := src.Patch(c.Digest)
@@ -116,10 +157,13 @@ func main() {
 		// Filter out BUILD files and files that begin with "grail_internal".
 		// Prefixes are already rewritten by the repo.
 		var diffs []git.Diff
+	diffloop:
 		for _, diff := range patch.Diffs {
-			base := path.Base(diff.Path)
-			if base == "BUILD" || strings.HasPrefix(base, "grail_internal") {
-				continue
+			for _, r := range strip {
+				if r.MatchString(diff.Path) {
+					log.Debug.Printf("file %s matches rule %s: stripping", diff.Path, r)
+					continue diffloop
+				}
 			}
 			diffs = append(diffs, diff)
 		}
@@ -127,6 +171,7 @@ func main() {
 			log.Printf("skipping empty patch %s", patch.ID.Hex()[:7])
 			continue
 		}
+		ncommit++
 		patch.Diffs = diffs
 		if *dump {
 			if err := patch.Write(os.Stdout); err != nil {
@@ -139,7 +184,7 @@ func main() {
 			}
 		}
 	}
-	if !*dump && *push {
+	if !*dump && *push && ncommit > 0 {
 		log.Printf("pushing changes to %s %s", dstURL, dstBranch)
 		if err := dst.Push("origin", dstBranch); err != nil {
 			log.Fatalf("%s: push origin %s: %v", dst, dstBranch, err)
