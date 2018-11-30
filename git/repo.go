@@ -55,6 +55,7 @@ func Open(url, prefix, branch string) (*Repo, error) {
 	h := sha256.New()
 	h.Write([]byte(url))
 	b := h.Sum(nil)
+	os.MkdirAll(Dir, 0700)
 	path := filepath.Join(Dir, fmt.Sprintf("%s%02x%02x%02x%02x", base, b[0], b[1], b[2], b[3]))
 	_, err := os.Stat(path)
 	if err != nil && !os.IsNotExist(err) {
