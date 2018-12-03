@@ -15,6 +15,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -230,8 +232,88 @@ func (r *Repo) Apply(patch Patch) error {
 // Push pushes the current state of the repository to the provided
 // branch on the provided remote.
 func (r *Repo) Push(remote, remoteBranch string) error {
-	_, err := r.git(nil, "push", remote, "HEAD:"+remoteBranch)
+	_, err := r.git(nil, "lfs", "push", "--all", "origin", remoteBranch)
+	if err != nil {
+		return err
+	}
+	_, err = r.git(nil, "push", remote, "HEAD:"+remoteBranch)
 	return err
+}
+
+// ListLFSPointers returns paths to in the repository which are LFS
+// pointers. The paths are relative to the repository's root.
+func (r *Repo) ListLFSPointers() (pointers []string, err error) {
+	lines, err := r.git(nil, "lfs", "ls-files")
+	if err != nil {
+		return nil, err
+	}
+	prefix := []byte(r.prefix)
+	for lines != nil {
+		line := scanLine(&lines)
+		if len(line) == 0 {
+			continue
+		}
+		parts := bytes.Fields(line)
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("malformed git lfs ls-files output %q", line)
+		}
+		if !bytes.HasPrefix(parts[2], prefix) {
+			log.Debug.Printf("skipping LFS file %s: not in repo's prefix %s", parts[2], prefix)
+			continue
+		}
+		path := bytes.TrimPrefix(parts[2], prefix)
+		pointers = append(pointers, string(path))
+	}
+	return
+}
+
+// CopyLFSObject copies the object referred to by the provided pointer
+// from the given source repository.
+func (r *Repo) CopyLFSObject(src *Repo, pointer string) error {
+	p, err := ioutil.ReadFile(r.path(r.prefix, pointer))
+	if err != nil {
+		return err
+	}
+	var (
+		q    = p
+		line []byte
+		oid  string
+	)
+	for q != nil {
+		line = scanLine(&q)
+		if !bytes.HasPrefix(line, []byte("oid ")) {
+			continue
+		}
+		id, err := digest.Parse(string(line[4:]))
+		if err != nil {
+			return err
+		}
+		oid = id.Hex()
+		break
+	}
+	if oid == "" {
+		return errors.New("pointer file is missing oid")
+	}
+	opath := r.path(".git", "lfs", "objects", oid[:2], oid[2:4], oid)
+	// Do we already have the object?
+	if _, err := os.Stat(opath); err == nil {
+		log.Debug.Printf("object %s for pointer %s already exists", oid[:7], pointer)
+		return nil
+	}
+	log.Debug.Printf("copying object %s for pointer %s", oid[:7], pointer)
+	os.MkdirAll(filepath.Dir(opath), 0700)
+	tmp, err := os.Create(opath + ".grit")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := src.gitIO(bytes.NewReader(p), tmp, "lfs", "smudge"); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), opath)
 }
 
 func (r *Repo) path(elems ...string) string {
@@ -239,6 +321,21 @@ func (r *Repo) path(elems ...string) string {
 }
 
 func (r *Repo) git(stdin []byte, arg ...string) ([]byte, error) {
+	var in io.Reader
+	if stdin != nil {
+		in = bytes.NewReader(stdin)
+	}
+	var out bytes.Buffer
+	err := r.gitIO(in, &out, arg...)
+	return out.Bytes(), err
+}
+
+// GitIO invokes a git command on the repository r. The provided
+// arguments are passed to "git"; reader stdin is plumbed to the
+// process input and its output is written to writer stdout. If an
+// error occurs during the invocation of the "git" command, its
+// standard error is included in the returned error.
+func (r *Repo) gitIO(stdin io.Reader, stdout io.Writer, arg ...string) error {
 	args := []string{"-C", r.root}
 	for k, v := range r.config {
 		args = append(args, "-c")
@@ -246,27 +343,27 @@ func (r *Repo) git(stdin []byte, arg ...string) ([]byte, error) {
 	}
 	args = append(args, arg...)
 	cmd := exec.Command("git", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	cmd.Stdout = stdout
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if stdin != nil {
-		cmd.Stdin = bytes.NewReader(stdin)
+	cmd.Stdin = stdin
+	if len(arg) > 0 && arg[0] != "lfs" {
+		cmd.Env = append(os.Environ(), "GIT_LFS_SKIP_SMUDGE=1")
 	}
-	cmd.Env = append(os.Environ(), "GIT_LFS_SKIP_SMUDGE=1")
 	log.Debug.Printf("%s: git %s", r.root, strings.Join(arg, " "))
 	if err := cmd.Run(); err != nil {
 		outerr := string(stderr.Bytes())
 		if len(outerr) > 0 {
 			outerr = "\n" + outerr
 		}
-		return nil, fmt.Errorf("%s: git %s: error: %v%s", r.root, strings.Join(arg, " "), err, outerr)
+		return fmt.Errorf("%s: git %s: error: %v%s", r.root, strings.Join(arg, " "), err, outerr)
 	}
 	outerr := string(stderr.Bytes())
 	if len(outerr) > 0 {
 		outerr = "\n" + outerr
 	}
 	log.Debug.Printf("%s: git %s: ok%s", r.root, strings.Join(arg, " "), outerr)
-	return stdout.Bytes(), nil
+	return nil
 }
 
 // Header is a commit header.

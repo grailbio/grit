@@ -58,7 +58,10 @@ import (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: grit src dst rules...`)
+	fmt.Fprintln(os.Stderr, `usage:
+	grit src dst rules...
+	grit -push src dst rules...
+	grit -dump src dst rules`)
 	flag.PrintDefaults()
 	os.Exit(2)
 }
@@ -73,7 +76,9 @@ func main() {
 	if flag.NArg() < 2 {
 		flag.Usage()
 	}
-
+	if *push && *dump {
+		flag.Usage()
+	}
 	srcURL, srcPrefix, srcBranch := parseSpec(flag.Arg(0))
 	dstURL, dstPrefix, dstBranch := parseSpec(flag.Arg(1))
 	if srcURL == dstURL {
@@ -182,13 +187,36 @@ func main() {
 			if err := dst.Apply(patch); err != nil {
 				log.Fatalf("%s: apply %s: %s", dst, patch, err)
 			}
+			paths := patch.Paths()
+
+			// Copy any LFS objects that were touched by this change.
+			// Doing it this way alllows us to download only LFS objects
+			// that actually need to be transferred.
+			ptrs, err := dst.ListLFSPointers()
+			if err != nil {
+				log.Fatal(err)
+			}
+			for _, ptr := range ptrs {
+				if !paths[ptr] {
+					continue
+				}
+				if err := dst.CopyLFSObject(src, ptr); err != nil {
+					log.Fatalf("copying LFS object %s: %v", ptr, err)
+				}
+			}
 		}
 	}
-	if !*dump && *push && ncommit > 0 {
-		log.Printf("pushing changes to %s %s", dstURL, dstBranch)
-		if err := dst.Push("origin", dstBranch); err != nil {
-			log.Fatalf("%s: push origin %s: %v", dst, dstBranch, err)
-		}
+
+	if !*push {
+		return
+	}
+	if ncommit == 0 {
+		log.Print("nothing to do")
+		return
+	}
+	log.Printf("pushing changes to %s %s", dstURL, dstBranch)
+	if err := dst.Push("origin", dstBranch); err != nil {
+		log.Fatalf("%s: push origin %s: %v", dst, dstBranch, err)
 	}
 }
 

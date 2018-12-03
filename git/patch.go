@@ -56,6 +56,16 @@ func (p Patch) String() string {
 		p.ID.Hex()[:7], p.Author, p.Time, p.Subject, len(p.Diffs))
 }
 
+// Paths returns the paths touched by this Patch
+// as a set.
+func (p Patch) Paths() map[string]bool {
+	paths := make(map[string]bool)
+	for _, diff := range p.Diffs {
+		paths[diff.Path] = true
+	}
+	return paths
+}
+
 // Patch returns the serialized patch as a string.
 func (p Patch) Patch() string {
 	var b strings.Builder
