@@ -71,6 +71,7 @@ func main() {
 	log.AddFlags()
 	dump := flag.Bool("dump", false, "dump patches to stdout instead of applying them to the destination repository")
 	push := flag.Bool("push", false, "push applied changes to the destination repository's remote")
+	configs := flag.String("config", "", "comma-separated key-value pairs that should be passed to git")
 	flag.Usage = usage
 	flag.Parse()
 	if flag.NArg() < 2 {
@@ -113,6 +114,16 @@ func main() {
 		if err != nil {
 			log.Fatalf("open %s: %v", url, err)
 		}
+		for _, kv := range strings.Split(*configs, ",") {
+			if kv == "" {
+				continue
+			}
+			parts := strings.SplitN(kv, "=", 2)
+			if len(parts) != 2 {
+				log.Fatalf("bad config %s", kv)
+			}
+			r.Configure(parts[0], parts[1])
+		}
 		return r
 	}
 	// Open repositories in URL order so that we don't deadlock across
@@ -147,6 +158,16 @@ func main() {
 			log.Fatalf("log %s: %v", src, err)
 		}
 	}
+	// Filter out commits which are themselves copies, so that
+	// we can properly support multi-way syncing.
+	raw := commits
+	commits = nil
+	for _, commit := range raw {
+		if commit.ShipitID() == "" {
+			commits = append(commits, commit)
+		}
+	}
+
 	log.Printf("%d commits to copy", len(commits))
 	var ncommit int
 	for i := len(commits) - 1; i >= 0; i-- {

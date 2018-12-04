@@ -153,6 +153,7 @@ func (r *Repo) Patch(id digest.Digest) (Patch, error) {
 	// passed directly as a regular email.
 
 	rawdiffs, err := r.git(nil, "format-patch",
+		"--always", // to support empty commits
 		"--no-renames", "--no-stat", "--stdout",
 		"--format=", // diff content only
 		"-1", id.Hex(),
@@ -161,7 +162,7 @@ func (r *Repo) Patch(id digest.Digest) (Patch, error) {
 		return Patch{}, err
 	}
 	raw, err := r.git(nil, "format-patch",
-		"--no-renames", "--no-stat", "-1", id.Hex(), "--stdout")
+		"--always", "--no-renames", "--no-stat", "-1", id.Hex(), "--stdout")
 	if err != nil {
 		return Patch{}, err
 	}
