@@ -106,9 +106,6 @@ func main() {
 
 	log.Printf("synchronizing repo:%s prefix:%s branch:%s -> repo:%s prefix:%s branch:%s",
 		srcURL, srcPrefix, srcBranch, dstURL, dstPrefix, dstBranch)
-	if dstPrefix != "" {
-		log.Fatal("destination prefixes not yet supported")
-	}
 	open := func(url, prefix, branch string) *git.Repo {
 		r, err := git.Open(url, prefix, branch)
 		if err != nil {
@@ -172,7 +169,7 @@ func main() {
 	var ncommit int
 	for i := len(commits) - 1; i >= 0; i-- {
 		c := commits[i]
-		patch, err := src.Patch(c.Digest)
+		patch, err := src.Patch(c.Digest, dst.Prefix())
 		if err != nil {
 			log.Fatalf("%s: patch %s: %v", src, c.Digest.Hex()[:7], err)
 		}

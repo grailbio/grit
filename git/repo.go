@@ -83,6 +83,11 @@ func Open(url, prefix, branch string) (*Repo, error) {
 	return r, nil
 }
 
+// Prefix returns the prefix within the repository, as specified in Open.
+func (r *Repo) Prefix() string {
+	return r.prefix
+}
+
 func (r *Repo) String() string {
 	return fmt.Sprintf("%s,%s,%s", r.url, r.prefix, r.branch)
 }
@@ -113,6 +118,10 @@ func (r *Repo) Log(args ...string) (commits []*Commit, err error) {
 	}
 	out, err := r.git(nil, args...)
 	if err != nil {
+		if strings.Contains(err.Error(), "path not in the working tree") {
+			// Allow missing destination directory.
+			return nil, nil
+		}
 		return nil, err
 	}
 	err = foreach(out, "commit", func(commit []byte) error {
@@ -145,9 +154,10 @@ var (
 	prefixB = []byte("+++ b/")
 )
 
-// Patch returns a patch representing the commit named by the
-// provided ID.
-func (r *Repo) Patch(id digest.Digest) (Patch, error) {
+// Patch returns a patch representing the commit named by the provided ID.  Arg
+// dstPrefix is the prefix of the destination repository. If dstPrefix!="", it
+// it is prepended to the pathnames in the patch.
+func (r *Repo) Patch(id digest.Digest, dstPrefix string) (Patch, error) {
 	// To minimize the amount of parsing we have to do here, first get the
 	// diffs only, and then extract the rest of the message which can be
 	// passed directly as a regular email.
@@ -185,10 +195,18 @@ func (r *Repo) Patch(id digest.Digest) (Patch, error) {
 	if err != nil {
 		return Patch{}, err
 	}
+	fixPath := func(path string) string {
+		path = strings.TrimPrefix(path, r.prefix)
+		if dstPrefix != "" {
+			path = dstPrefix + "/" + path
+		}
+		return path
+	}
+
 	var diffs []Diff
 	for _, diff := range patch.Diffs {
 		if strings.HasPrefix(diff.Path, r.prefix) {
-			diff.Path = strings.TrimPrefix(diff.Path, r.prefix)
+			diff.Path = fixPath(diff.Path)
 			// Also rewrite any --- or +++ meta lines that begin with a/ or b/,
 			// since they are also paths. The rest of meta is opaque to us.
 			meta := diff.Meta
@@ -197,7 +215,7 @@ func (r *Repo) Patch(id digest.Digest) (Patch, error) {
 				line := scanLine(&meta)
 				switch {
 				case bytes.HasPrefix(line, prefixA) || bytes.HasPrefix(line, prefixB):
-					path := bytes.TrimPrefix(line[len(prefixA):], []byte(r.prefix))
+					path := []byte(fixPath(string(line[len(prefixA):])))
 					diff.Meta = append(diff.Meta, line[:len(prefixA)]...)
 					diff.Meta = append(diff.Meta, path...)
 					diff.Meta = append(diff.Meta, '\n')

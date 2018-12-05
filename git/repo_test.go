@@ -61,7 +61,7 @@ func TestLog(t *testing.T) {
 	if got, want := c.Title(), "first commit"; got != want {
 		t.Errorf("got %v, want %v", got, want)
 	}
-	patch, err := repo.Patch(c.Digest)
+	patch, err := repo.Patch(c.Digest, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestPatchApply(t *testing.T) {
 	}
 	shell(t, dir, `
 		mkdir repos
-		
+
 		# Set up source repository and add a couple of commits:
 		# - add a file to dir1
 		# - move this file to dir2
@@ -116,9 +116,9 @@ func TestPatchApply(t *testing.T) {
 		git mv dir1/file1 dir2
 		git commit -m'second commit'
 		git push
-		
+
 		cd ..
-		
+
 		# Set up second, empty repository. Note that grit cannot
 		# initialize empty repositories, so we add a first commit.
 		git init --bare repos/dst
@@ -149,7 +149,7 @@ func TestPatchApply(t *testing.T) {
 	if got, want := len(commits), 1; got != want {
 		t.Fatalf("got %v, want %v", got, want)
 	}
-	patch, err := src.Patch(commits[0].Digest)
+	patch, err := src.Patch(commits[0].Digest, "")
 	if err != nil {
 		t.Fatal(err)
 	}
