@@ -403,17 +403,15 @@ type Commit struct {
 var shipitRe = regexp.MustCompile(`(?:fb)?shipit-source-id: ([a-z0-9]+)`)
 
 // ShipitID returns the shipit ID, if any.
-func (c *Commit) ShipitID() string {
-	g := shipitRe.FindStringSubmatch(c.Body)
-	switch len(g) {
-	case 0:
-		return ""
-	case 2:
-		return g[1]
-	default:
-		log.Fatalf("invalid commit %s", c)
-		panic("not reached")
+func (c *Commit) ShipitID() (ids []string) {
+	for _, g := range shipitRe.FindAllStringSubmatch(c.Body, -1) {
+		if len(g) != 2 {
+			log.Fatalf("invalid commit %s (%+v)", c, g)
+			panic("not reached")
+		}
+		ids = append(ids, g[1])
 	}
+	return
 }
 
 // String returns a "one-line" commit message.

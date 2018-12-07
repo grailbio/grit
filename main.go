@@ -35,7 +35,7 @@
 //		Strips diffs applied to files matching the given regular
 //		expression.
 //
-// Example
+// Example: one-way sync
 //
 // Copy commits from the "project/" directory in repository
 // ssh://git@git.company.com/foo.git to the root directory in the
@@ -44,6 +44,34 @@
 //
 // 	grit -push ssh://git@git.company.com/foo.git,project/ \
 //		https://github.com/company/project.git "strip:^BUILD$" "strip:/BUILD$"
+//
+// Example: two-way sync
+//
+// Assume we want to sync bidirectionally between two repositories:
+//
+//  repoA=ssh://git@company.example.com,go/src/github.com/grailbio/project.git
+//  repoB=ssh://git@github.com:github.com/grailbio/project.git
+//
+// We usually develop on repoA and mirror changes to repoB. We also want to
+// accept external contributions or upstream changes from repoB and push them to
+// repoA. To sync from repoA to repoB, do the following:
+//
+//  grit -push $repoA $repoB
+//
+// To sync from repoB to repo A, do the following:
+//
+//  # Pull changes from repoB to repoA. But don't push it automatically, since we want to
+//  # review them internally.
+//  grit $repoB $repoA
+//  # grailXXXXX is the copy of repoA managed by grit
+//  cd /var/tmp/grailXXXXX
+//  # Squash changes into one
+//  git reset --soft origin/master && git commit --edit -m"$(git log --reverse HEAD..HEAD@{1})"
+//  # Start a regular code review process.
+//  arc diff
+//  # After the review is accepted, land the changes.
+//  arc land
+
 package main
 
 import (
@@ -150,7 +178,15 @@ func main() {
 		}
 	} else {
 		log.Printf("synchronizing: last diff: %v, source: %v", last[0].Digest, last[0].ShipitID())
-		commits, err = src.Log(last[0].ShipitID()+"..master", "--ancestry-path", "--no-merges")
+		ids := last[0].ShipitID()
+		if len(ids) == 0 {
+			log.Fatalf("no fbshipid-resource-id found in commit: %+v", last[0])
+		}
+		// When a commit is a squash of multiple commits, they are sorted in
+		// ascending chronological order. So the last ID is the one we should sync
+		// from.
+		newestID := ids[len(ids)-1]
+		commits, err = src.Log(newestID+"..master", "--ancestry-path", "--no-merges")
 		if err != nil {
 			log.Fatalf("log %s: %v", src, err)
 		}
@@ -160,7 +196,7 @@ func main() {
 	raw := commits
 	commits = nil
 	for _, commit := range raw {
-		if commit.ShipitID() == "" {
+		if len(commit.ShipitID()) == 0 {
 			commits = append(commits, commit)
 		}
 	}
