@@ -8,7 +8,7 @@
 //
 // Usage:
 //
-// 	grit [-push] [-dump] src dst rules...
+// 	grit [-push] [-dump] [-linearize] src dst rules...
 //
 // "grit -push src dst rules..." copies commits from the repository
 // src to the repository dst, applying the the given rules and, if
@@ -24,6 +24,16 @@
 // prefix is specified, Grit considers constructs a view of the repository
 // limited to the given prefix path. Changes outside of this prefix are
 // discarded.
+//
+// Linearization
+//
+// If the flag -linearize is provided, then the source repository's
+// history is linearized before copying commits. Linearization is
+// done by ensuring that every commit has a single parent, so that
+// the repository contains no merge commits. This is useful to ensure
+// that grit can cleanly apply patches from repositories whose
+// histories are not linear (e.g., when accepting patches from
+// GitHub).
 //
 // Rules
 //
@@ -100,6 +110,7 @@ func main() {
 	dump := flag.Bool("dump", false, "dump patches to stdout instead of applying them to the destination repository")
 	push := flag.Bool("push", false, "push applied changes to the destination repository's remote")
 	configs := flag.String("config", "", "comma-separated key-value pairs that should be passed to git")
+	linearize := flag.Bool("linearize", false, "linearize source repository history before copying commits")
 	flag.Usage = usage
 	flag.Parse()
 	if flag.NArg() < 2 {
@@ -163,6 +174,12 @@ func main() {
 	}
 	defer src.Close()
 	defer dst.Close()
+
+	if *linearize {
+		if err := src.Linearize(); err != nil {
+			log.Fatalf("linearize %s: %v", src, err)
+		}
+	}
 
 	// Last synchronized commit, if any.
 	last, err := dst.Log("-1", "--grep", `^\(fb\)\?shipit-source-id: [a-z0-9]\+$`)

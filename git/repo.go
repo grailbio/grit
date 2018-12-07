@@ -98,6 +98,12 @@ func (r *Repo) Close() error {
 	return r.lock.Unlock()
 }
 
+// Linearize linearizes the repository's history.
+func (r *Repo) Linearize() error {
+	_, err := r.git(nil, "filter-branch", "-f", "--parent-filter", `cut -f 2,3 -d " "`)
+	return err
+}
+
 // Configure sets the configuration parameter named by key to
 // the value value. Properties configured this way overrides the
 // Git's defaults (e.g., sourced through a user's .gitconfig) for
