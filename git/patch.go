@@ -92,6 +92,24 @@ func (p Patch) Write(w io.Writer) error {
 	return ew.Err()
 }
 
+var oid = []byte("oid")
+
+// MaybeContainsLFSPointer uses (coarse) heuristics to determine
+// whether the patch could possibly contain an LFS pointer. If it
+// returns false, then there is definitely not an LFS pointer in the
+// patch.
+func (p Patch) MaybeContainsLFSPointer() bool {
+	for _, diff := range p.Diffs {
+		// This is definitely hacky, but works well enough. These are
+		// required fields in any LFS pointer file, and any change
+		// involving a new LFS object must declare an oid.
+		if bytes.Contains(diff.Body, oid) {
+			return true
+		}
+	}
+	return false
+}
+
 var errMalformedPatch = errors.New("malformed patch")
 var continueHeader = []byte(" ")
 

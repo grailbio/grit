@@ -258,11 +258,14 @@ func main() {
 			if err := dst.Apply(patch); err != nil {
 				log.Fatalf("%s: apply %s: %s", dst, patch, err)
 			}
-			paths := patch.Paths()
-
+			if !patch.MaybeContainsLFSPointer() {
+				log.Debug.Printf("%s: patch contains no LFS pointers", patch)
+				continue
+			}
 			// Copy any LFS objects that were touched by this change.
 			// Doing it this way alllows us to download only LFS objects
 			// that actually need to be transferred.
+			paths := patch.Paths()
 			ptrs, err := dst.ListLFSPointers()
 			if err != nil {
 				log.Fatal(err)

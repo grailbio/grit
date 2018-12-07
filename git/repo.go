@@ -80,6 +80,8 @@ func Open(url, prefix, branch string) (*Repo, error) {
 	if _, err := r.git(nil, "reset", "--hard", "FETCH_HEAD"); err != nil {
 		return nil, err
 	}
+	// Clear potentially interrupted run.
+	_, _ = r.git(nil, "am", "--abort")
 	return r, nil
 }
 
