@@ -182,7 +182,7 @@ func main() {
 	}
 
 	// Last synchronized commit, if any.
-	last, err := dst.Log("-1", "--grep", `^\(fb\)\?shipit-source-id: [a-z0-9]\+$`)
+	last, err := dst.Log("-1", "--grep", `^\s*\(fb\)\?shipit-source-id: [a-z0-9]\+$`)
 	if err != nil {
 		log.Fatalf("log %s: %v", dst, err)
 	}
