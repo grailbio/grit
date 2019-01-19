@@ -45,6 +45,19 @@
 //		Strips diffs applied to files matching the given regular
 //		expression.
 //
+//	rewrite:regexp:/old_re/new_re/
+//    For each file whose path matches regexp, regexp-replace each line in the
+//    file from old_re to new_re. For example, rule
+//
+//        rewrite:go.mod$:/replace .* => .*//
+//
+//    will remove all "replace from => to" directives from go.mod
+//    files.  The 2nd letter after the path regexp ('/' in the example)
+//    determines the separator character for the old and the new regexps. The
+//    previous example can also be written as
+//
+//        rewrite:go.mod$:!replace .* => .*!!
+//
 // Example: one-way sync
 //
 // Copy commits from the "project/" directory in repository
@@ -85,6 +98,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"os"
@@ -102,6 +116,46 @@ func usage() {
 	grit -dump src dst rules`)
 	flag.PrintDefaults()
 	os.Exit(2)
+}
+
+type rewriteRule struct {
+	pathRe *regexp.Regexp // matched against the pathname
+	oldRe  *regexp.Regexp // matched against each line in the file
+	new    []byte         // replacement
+}
+
+func parseRewriteRule(rule string) (r rewriteRule) {
+	parts := strings.SplitN(rule, ":", 2)
+	if len(parts) != 2 {
+		log.Fatalf("invalid rewrite rule %s", rule)
+	}
+	var err error
+	if r.pathRe, err = regexp.Compile(parts[0]); err != nil {
+		log.Fatalf("rewrite: invalid path regexp %s: %s", parts[0], err)
+	}
+	if len(parts[1]) < 3 {
+		log.Fatalf("rewrite: rule '%s' must be of form rewrite:pathre:/from_re/to_re/", rule)
+	}
+	sep := parts[1][0:1]
+	parts = strings.Split(parts[1][1:], sep)
+	if len(parts) != 3 || parts[2] != "" {
+		log.Fatalf("rewrite: rule '%s' must be of form rewrite:pathre:/from_re/to_re/", rule)
+	}
+	if r.oldRe, err = regexp.Compile(parts[0]); err != nil {
+		log.Fatalf("rewrite: invalid 'from' regexp %s: %s", parts[0], err)
+	}
+	r.new = []byte(parts[1])
+	return r
+}
+
+func (r *rewriteRule) rewrite(diff []byte) []byte {
+	result := bytes.Buffer{}
+	for _, line := range bytes.Split(diff, []byte("\n")) {
+		line = r.oldRe.ReplaceAll(line, r.new)
+		result.Write(line)
+		result.WriteByte('\n')
+	}
+	return result.Bytes()
 }
 
 func main() {
@@ -127,20 +181,28 @@ func main() {
 	}
 
 	var strip []*regexp.Regexp
+	var rewrite []rewriteRule
 	rules := flag.Args()[2:]
 	for _, rule := range rules {
 		parts := strings.SplitN(rule, ":", 2)
 		if len(parts) != 2 {
 			log.Fatalf("invalid rule %s", rule)
 		}
-		if parts[0] != "strip" {
+		switch parts[0] {
+		case "strip":
+			r, err := regexp.Compile(parts[1])
+			if err != nil {
+				log.Fatalf("invalid regexp %s: %s", parts[1], err)
+			}
+			strip = append(strip, r)
+		case "rewrite":
+			rewrite = append(rewrite, parseRewriteRule(parts[1]))
+			if len(parts) != 2 {
+				log.Fatalf("invalid rule %s", rule)
+			}
+		default:
 			log.Fatalf("invalid rule type %s", parts[0])
 		}
-		r, err := regexp.Compile(parts[1])
-		if err != nil {
-			log.Fatalf("invalid regexp %s: %s", parts[1], err)
-		}
-		strip = append(strip, r)
 	}
 
 	log.Printf("synchronizing repo:%s prefix:%s branch:%s -> repo:%s prefix:%s branch:%s",
@@ -239,6 +301,11 @@ func main() {
 				if r.MatchString(diff.Path) {
 					log.Debug.Printf("file %s matches rule %s: stripping", diff.Path, r)
 					continue diffloop
+				}
+			}
+			for _, r := range rewrite {
+				if r.pathRe.MatchString(diff.Path) {
+					diff.Body = r.rewrite(diff.Body)
 				}
 			}
 			diffs = append(diffs, diff)
