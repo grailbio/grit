@@ -45,7 +45,13 @@
 //		Strips diffs applied to files matching the given regular
 //		expression.
 //
-//	rewrite:regexp:/old_re/new_re/
+//  strip-message:regexp
+//    Strips commit messages when all files with changes match the given
+//    regular expression. This rule can be used to push internal cross-repo
+//    maintenance changes that do not need a context in the external world. For
+//    example, go.mod and go.sum files.
+//
+//  rewrite:regexp:/old_re/new_re/
 //    For each file whose path matches regexp, regexp-replace each line in the
 //    file from old_re to new_re. For example, rule
 //
@@ -181,6 +187,7 @@ func main() {
 	}
 
 	var strip []*regexp.Regexp
+	var stripMessagePaths []*regexp.Regexp
 	var rewrite []rewriteRule
 	rules := flag.Args()[2:]
 	for _, rule := range rules {
@@ -195,6 +202,12 @@ func main() {
 				log.Fatalf("invalid regexp %s: %s", parts[1], err)
 			}
 			strip = append(strip, r)
+		case "strip-message":
+			r, err := regexp.Compile(parts[1])
+			if err != nil {
+				log.Fatalf("invalid regexp %s: %s", parts[1], err)
+			}
+			stripMessagePaths = append(stripMessagePaths, r)
 		case "rewrite":
 			rewrite = append(rewrite, parseRewriteRule(parts[1]))
 			if len(parts) != 2 {
@@ -292,9 +305,10 @@ func main() {
 			patch.Body += "\n\n"
 		}
 		patch.Body += fmt.Sprintf("fbshipit-source-id: %s", patch.ID.Hex()[:7])
-		// Filter out BUILD files and files that begin with "grail_internal".
+		// Apply filepath specific rules.
 		// Prefixes are already rewritten by the repo.
 		var diffs []git.Diff
+		stripMessage := true
 	diffloop:
 		for _, diff := range patch.Diffs {
 			for _, r := range strip {
@@ -302,6 +316,16 @@ func main() {
 					log.Debug.Printf("file %s matches rule %s: stripping", diff.Path, r)
 					continue diffloop
 				}
+			}
+			var matchesStripMessagePaths bool
+			for _, r := range stripMessagePaths {
+				if r.MatchString(diff.Path) {
+					log.Debug.Printf("file %s matches rule %s for stripping commit messages", diff.Path, r)
+					matchesStripMessagePaths = true
+				}
+			}
+			if !matchesStripMessagePaths {
+				stripMessage = false
 			}
 			for _, r := range rewrite {
 				if r.pathRe.MatchString(diff.Path) {
@@ -316,6 +340,10 @@ func main() {
 		}
 		ncommit++
 		patch.Diffs = diffs
+		if stripMessage {
+			patch.Subject = "Sync"
+			patch.Body = "Commit message stripped."
+		}
 		if *dump {
 			if err := patch.Write(os.Stdout); err != nil {
 				log.Fatal(err)
