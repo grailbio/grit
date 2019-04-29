@@ -303,7 +303,8 @@ func main() {
 		if patch.Body != "" {
 			patch.Body += "\n\n"
 		}
-		patch.Body += fmt.Sprintf("fbshipit-source-id: %s", patch.ID.Hex()[:7])
+		shipitTag := fmt.Sprintf("fbshipit-source-id: %s", patch.ID.Hex()[:7])
+		patch.Body += shipitTag
 		// Apply filepath specific rules.
 		// Prefixes are already rewritten by the repo.
 		var diffs []git.Diff
@@ -340,8 +341,8 @@ func main() {
 		ncommit++
 		patch.Diffs = diffs
 		if stripMessage {
-			patch.Subject = "Sync"
-			patch.Body = "Commit message stripped."
+			patch.Subject = "Stripped commit"
+			patch.Body = "Commit message stripped.\n\n" + shipitTag
 		}
 		if *dump {
 			if err := patch.Write(os.Stdout); err != nil {
