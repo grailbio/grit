@@ -41,9 +41,9 @@
 // they are copied to the destination repository. Rules are specified
 // as "kind:param". Rules kinds are:
 //
-//	strip:regexp
-//		Strips diffs applied to files matching the given regular
-//		expression.
+//  strip:regexp
+//    Strips diffs applied to files matching the given regular
+//    expression.
 //
 //  strip-message:regexp
 //    Strips commit messages when all files with changes match the given
@@ -55,16 +55,15 @@
 //    For each file whose path matches regexp, regexp-replace each line in the
 //    file from old_re to new_re. For example, rule
 //
-//        rewrite:go.mod$:/replace .* => .*//
-//
+//  rewrite:go.mod$:/replace .* => .*//
 //    will remove all "replace from => to" directives from go.mod
 //    files.  The 2nd letter after the path regexp ('/' in the example)
 //    determines the separator character for the old and the new regexps. The
 //    previous example can also be written as
 //
-//        rewrite:go.mod$:!replace .* => .*!!
+//  rewrite:go.mod$:!replace .* => .*!!
 //
-// Example: one-way sync
+// One way sync
 //
 // Copy commits from the "project/" directory in repository
 // ssh://git@git.company.com/foo.git to the root directory in the
@@ -74,7 +73,7 @@
 // 	grit -push ssh://git@git.company.com/foo.git,project/ \
 //		https://github.com/company/project.git "strip:^BUILD$" "strip:/BUILD$"
 //
-// Example: two-way sync
+// Two-way sync
 //
 // Assume we want to sync bidirectionally between two repositories:
 //
