@@ -259,7 +259,7 @@ func (r *Repo) Apply(patch Patch) error {
 // Push pushes the current state of the repository to the provided
 // branch on the provided remote.
 func (r *Repo) Push(remote, remoteBranch string) error {
-	_, err := r.git(nil, "lfs", "push", "--all", "origin", remoteBranch)
+	_, err := r.git(nil, "lfs", "push", "origin", remoteBranch)
 	if err != nil {
 		return err
 	}
