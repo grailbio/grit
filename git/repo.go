@@ -25,6 +25,7 @@ import (
 	"unicode"
 
 	"github.com/grailbio/base/digest"
+	"github.com/grailbio/base/flock"
 	"github.com/grailbio/base/log"
 )
 
@@ -42,7 +43,7 @@ type Repo struct {
 	branch string
 	root   string
 	prefix string
-	lock   *flock
+	lock   *flock.T
 	config map[string]string
 }
 
@@ -64,7 +65,7 @@ func Open(url, prefix, branch string) (*Repo, error) {
 		return nil, err
 	}
 	r := &Repo{url: url, root: path, prefix: prefix, branch: branch}
-	r.lock = newFlock(path + ".lock")
+	r.lock = flock.New(path + ".lock")
 	if err := r.lock.Lock(); err != nil {
 		return nil, fmt.Errorf("lock %s: %v", path, err)
 	}
