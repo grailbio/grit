@@ -10,6 +10,7 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	_ "crypto/sha1"
 	"crypto/sha256"
@@ -66,7 +67,7 @@ func Open(url, prefix, branch string) (*Repo, error) {
 	}
 	r := &Repo{url: url, root: path, prefix: prefix, branch: branch}
 	r.lock = flock.New(path + ".lock")
-	if err := r.lock.Lock(); err != nil {
+	if err := r.lock.Lock(context.Background()); err != nil {
 		return nil, fmt.Errorf("lock %s: %v", path, err)
 	}
 	if err != nil {
