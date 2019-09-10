@@ -18,6 +18,8 @@ import (
 	"github.com/grailbio/base/digest"
 )
 
+const zeroWidthSpace = "\u200b"
+
 // A Diff represents a set of changes to a single file.
 type Diff struct {
 	// Path holds the path of the file to be changed.
@@ -73,15 +75,24 @@ func (p Patch) Patch() string {
 	return b.String()
 }
 
-// Write serializes the patch to the standard git patch format
-// and writes it to the provided writer.
+// Write serializes the patch to the standard git patch format and
+// writes it to the provided writer. Write escapes diff-like content
+// in the patch body. Specifically, lines beginning with "diff",
+// "---", and "+++" are prefixed with a unicode zero width space.
+// This is to avoid ambiguity in git's patch parsing. This appears to
+// be an issue with git itself: patches that contain other patches
+// embedded in the patch description fail to apply properly using
+// standard git tooling.
 func (p Patch) Write(w io.Writer) error {
 	ew := &errWriter{Writer: w}
 	fmt.Fprintf(ew, "From %s Mon Sep 17 00:00:00 2001\n", p.ID.Hex())
 	fmt.Fprintf(ew, "From: %s\n", p.Author)
 	fmt.Fprintf(ew, "Date: %s\n", p.Time.Format(gitTimeLayout))
 	fmt.Fprintf(ew, "Subject: %s\n", p.Subject)
-	fmt.Fprintf(ew, "\n%s\n---\n\n\n", p.Body)
+	body := strings.Replace(p.Body, "\ndiff", "\n"+zeroWidthSpace+"diff", -1)
+	body = strings.Replace(body, "\n---", "\n"+zeroWidthSpace+"---", -1)
+	body = strings.Replace(body, "\n+++", "\n"+zeroWidthSpace+"+++", -1)
+	fmt.Fprintf(ew, "\n%s\n---\n\n\n", body)
 	for _, diff := range p.Diffs {
 		fmt.Fprintf(ew, "diff --git a/%s b/%s\n", diff.Path, diff.Path)
 		ew.Write(diff.Meta)
