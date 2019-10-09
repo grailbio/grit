@@ -135,7 +135,7 @@ func parsePatchHeader(b []byte) (Patch, error) {
 		p   Patch
 		err error
 	)
-	p.ID, err = digester.Parse(string(fields[1]))
+	p.ID, err = SHA1.Parse(string(fields[1]))
 	if err != nil {
 		return Patch{}, err
 	}

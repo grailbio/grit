@@ -51,6 +51,10 @@
 //    maintenance changes that do not need a context in the external world. For
 //    example, go.mod and go.sum files.
 //
+//  strip-commit:hash
+//    Strip the commit named by the given hash. This is useful for excluding
+//    troublesome commits that you know are safe to ignore.
+//
 //  rewrite:regexp:/old_re/new_re/
 //    For each file whose path matches regexp, regexp-replace each line in the
 //    file from old_re to new_re. For example, rule
@@ -184,9 +188,15 @@ func main() {
 		flag.Usage()
 	}
 
-	var strip []*regexp.Regexp
-	var stripMessagePaths []*regexp.Regexp
-	var rewrite []rewriteRule
+	var (
+		strip             []*regexp.Regexp
+		stripMessagePaths []*regexp.Regexp
+		// We store strip prefixes as strings since digesters refuse
+		// to parse odd-length hex strings and git typically gives out
+		// a prefix with 7 digits.
+		stripCommits []string
+		rewrite      []rewriteRule
+	)
 	rules := flag.Args()[2:]
 	for _, rule := range rules {
 		parts := strings.SplitN(rule, ":", 2)
@@ -206,6 +216,17 @@ func main() {
 				log.Fatalf("invalid regexp %s: %s", parts[1], err)
 			}
 			stripMessagePaths = append(stripMessagePaths, r)
+		case "strip-commit":
+			hash := parts[1]
+			if len(hash) < 7 {
+				log.Fatalf("invalid commit prefix %s: must have at least 7 digits", parts[1])
+			}
+			for _, d := range hash {
+				if (d < '0' || d > '9') && (d < 'a' || d > 'f') && (d < 'A' || d > 'F') {
+					log.Fatalf("invalid commit prefix %s: invalid hex digit %c", hash, d)
+				}
+			}
+			stripCommits = append(stripCommits, hash)
 		case "rewrite":
 			rewrite = append(rewrite, parseRewriteRule(parts[1]))
 			if len(parts) != 2 {
@@ -283,12 +304,21 @@ func main() {
 	}
 	// Filter out commits which are themselves copies, so that
 	// we can properly support multi-way syncing.
+	// We also filter out commits that match any stripped commits.
 	raw := commits
 	commits = nil
+commitsLoop:
 	for _, commit := range raw {
-		if len(commit.ShipitID()) == 0 {
-			commits = append(commits, commit)
+		if len(commit.ShipitID()) > 0 {
+			continue
 		}
+		for _, stripped := range stripCommits {
+			if strings.HasPrefix(commit.Digest.Hex(), stripped) {
+				log.Debug.Printf("commit %s: stripped by strip-commit rule", commit.Digest)
+				continue commitsLoop
+			}
+		}
+		commits = append(commits, commit)
 	}
 
 	log.Printf("%d commits to copy", len(commits))

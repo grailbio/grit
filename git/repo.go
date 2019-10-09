@@ -33,7 +33,8 @@ import (
 // Dir is the directory in which git checkouts are made.
 var Dir = "/var/tmp/grit"
 
-var digester = digest.Digester(crypto.SHA1)
+// SHA1 is the digester used to represent Git hashes.
+var SHA1 = digest.Digester(crypto.SHA1)
 
 const gitTimeLayout = "Mon, 2 Jan 2006 15:04:05 -0700"
 
@@ -140,7 +141,7 @@ func (r *Repo) Log(args ...string) (commits []*Commit, err error) {
 		digest := scanLine(&headers)
 		digest = bytes.TrimPrefix(digest, []byte("commit "))
 		var err error
-		c.Digest, err = digester.Parse(string(digest))
+		c.Digest, err = SHA1.Parse(string(digest))
 		if err != nil {
 			return fmt.Errorf("invalid commit digest %v: %v", digest, err)
 		}
