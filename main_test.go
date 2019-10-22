@@ -78,6 +78,64 @@ func TestGrit(t *testing.T) {
 	a.Compare(t, b)
 }
 
+// TestGritRules ensures that rules are applied universally across
+// grit actions.
+func TestGritRules(t *testing.T) {
+	dir, cleanup := temp(t)
+	defer cleanup()
+	var g grit
+	g.Build(t)
+
+	var (
+		repoHome   = filepath.Join(dir, "home")
+		repoRemote = filepath.Join(dir, "remote")
+	)
+
+	run(t, "git", "init", "--bare", repoHome)
+	run(t, "git", "init", "--bare", repoRemote)
+
+	home := repo(filepath.Join(dir, "home_checkout"))
+	remote := repo(filepath.Join(dir, "remote_checkout"))
+
+	home.Clone(t, filepath.Join(dir, "home"))
+	remote.Clone(t, filepath.Join(dir, "remote"))
+
+	for _, r := range []repo{home, remote} {
+		r.Git(t, "commit", "--allow-empty", "-m", "initial commit")
+		r.Git(t, "push")
+	}
+
+	remote.WriteFile(t, "file1", "content1")
+	remote.Git(t, "add", ".")
+	remote.Git(t, "commit", "-a", "-m", "commit 1 to remote")
+	remote.Git(t, "push")
+	g.Run(t, "-push", repoRemote, repoHome+",remote")
+
+	home.Git(t, "pull")
+
+	// Now synthesize a change to the home repo that touches the remote/
+	// directory but is excluded from the sync rules. We fabricate a
+	// source ID to emulate that it has been pushed from a different
+	// remote repository.
+
+	home.WriteFile(t, "remote/BUILD", "excluded content")
+	home.WriteFile(t, "test.txt", "out of scope content")
+	home.Git(t, "add", ".")
+	home.Git(t, "commit", "-a", "-m", "commit 1 to local\n\nfbshipit-source-id: bb96450\n")
+	home.Git(t, "push")
+
+	remote.WriteFile(t, "file2", "content2")
+	remote.Git(t, "add", ".")
+	remote.Git(t, "commit", "-a", "-m", "commit 1 2 remote")
+	remote.Git(t, "push")
+
+	g.Run(t, "-push", repoRemote, repoHome+",remote", "strip:^/BUILD$", "strip:^BUILD/")
+
+	home.Git(t, "pull")
+
+	repo(filepath.Join(string(home), "remote")).Compare(t, remote, "BUILD")
+}
+
 func temp(t *testing.T) (dir string, cleanup func()) {
 	t.Helper()
 	dir, cleanup = testutil.TempDir(t, "", "")
@@ -113,14 +171,22 @@ func (r repo) Run(t *testing.T, name string, arg ...string) {
 
 func (r repo) WriteFile(t *testing.T, path, content string) {
 	t.Helper()
-	if err := ioutil.WriteFile(filepath.Join(string(r), path), []byte(content), 0700); err != nil {
+	path = filepath.Join(string(r), path)
+	_ = os.MkdirAll(filepath.Dir(path), 0777)
+	if err := ioutil.WriteFile(path, []byte(content), 0700); err != nil {
 		t.Fatalf("%s: write %s: %v", r, path, err)
 	}
 }
 
-func (r repo) Compare(t *testing.T, q repo) {
+func (r repo) Compare(t *testing.T, q repo, excludes ...string) {
 	t.Helper()
-	run(t, "diff", "-x", `\.git`, string(r), string(q))
+	var args []string
+	for _, x := range excludes {
+		args = append(args, "-x", x)
+	}
+	args = append(args, "-x", `\.git`)
+	args = append(args, string(r), string(q))
+	run(t, "diff", args...)
 }
 
 type grit string

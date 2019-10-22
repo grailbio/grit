@@ -126,46 +126,6 @@ func usage() {
 	os.Exit(2)
 }
 
-type rewriteRule struct {
-	pathRe *regexp.Regexp // matched against the pathname
-	oldRe  *regexp.Regexp // matched against each line in the file
-	new    []byte         // replacement
-}
-
-func parseRewriteRule(rule string) (r rewriteRule) {
-	parts := strings.SplitN(rule, ":", 2)
-	if len(parts) != 2 {
-		log.Fatalf("invalid rewrite rule %s", rule)
-	}
-	var err error
-	if r.pathRe, err = regexp.Compile(parts[0]); err != nil {
-		log.Fatalf("rewrite: invalid path regexp %s: %s", parts[0], err)
-	}
-	if len(parts[1]) < 3 {
-		log.Fatalf("rewrite: rule '%s' must be of form rewrite:pathre:/from_re/to_re/", rule)
-	}
-	sep := parts[1][0:1]
-	parts = strings.Split(parts[1][1:], sep)
-	if len(parts) != 3 || parts[2] != "" {
-		log.Fatalf("rewrite: rule '%s' must be of form rewrite:pathre:/from_re/to_re/", rule)
-	}
-	if r.oldRe, err = regexp.Compile(parts[0]); err != nil {
-		log.Fatalf("rewrite: invalid 'from' regexp %s: %s", parts[0], err)
-	}
-	r.new = []byte(parts[1])
-	return r
-}
-
-func (r *rewriteRule) rewrite(diff []byte) []byte {
-	result := bytes.Buffer{}
-	for _, line := range bytes.Split(diff, []byte("\n")) {
-		line = r.oldRe.ReplaceAll(line, r.new)
-		result.Write(line)
-		result.WriteByte('\n')
-	}
-	return result.Bytes()
-}
-
 func main() {
 	log.SetPrefix("")
 	log.AddFlags()
@@ -188,17 +148,8 @@ func main() {
 		flag.Usage()
 	}
 
-	var (
-		strip             []*regexp.Regexp
-		stripMessagePaths []*regexp.Regexp
-		// We store strip prefixes as strings since digesters refuse
-		// to parse odd-length hex strings and git typically gives out
-		// a prefix with 7 digits.
-		stripCommits []string
-		rewrite      []rewriteRule
-	)
-	rules := flag.Args()[2:]
-	for _, rule := range rules {
+	var rules rules
+	for _, rule := range flag.Args()[2:] {
 		parts := strings.SplitN(rule, ":", 2)
 		if len(parts) != 2 {
 			log.Fatalf("invalid rule %s", rule)
@@ -209,13 +160,13 @@ func main() {
 			if err != nil {
 				log.Fatalf("invalid regexp %s: %s", parts[1], err)
 			}
-			strip = append(strip, r)
+			rules.strip = append(rules.strip, r)
 		case "strip-message":
 			r, err := regexp.Compile(parts[1])
 			if err != nil {
 				log.Fatalf("invalid regexp %s: %s", parts[1], err)
 			}
-			stripMessagePaths = append(stripMessagePaths, r)
+			rules.stripMessagePaths = append(rules.stripMessagePaths, r)
 		case "strip-commit":
 			hash := parts[1]
 			if len(hash) < 7 {
@@ -226,9 +177,9 @@ func main() {
 					log.Fatalf("invalid commit prefix %s: invalid hex digit %c", hash, d)
 				}
 			}
-			stripCommits = append(stripCommits, hash)
+			rules.stripCommits = append(rules.stripCommits, hash)
 		case "rewrite":
-			rewrite = append(rewrite, parseRewriteRule(parts[1]))
+			rules.rewrite = append(rules.rewrite, parseRewriteRule(parts[1]))
 			if len(parts) != 2 {
 				log.Fatalf("invalid rule %s", rule)
 			}
@@ -275,33 +226,59 @@ func main() {
 		}
 	}
 
-	// Last synchronized commit, if any.
-	last, err := dst.Log("-1", "--grep", `^\s*\(fb\)\?shipit-source-id: [a-z0-9]\+$`)
-	if err != nil {
-		log.Fatalf("log %s: %v", dst, err)
+	// Last synchronized commit that applies, if any. We apply the
+	// rewrite rules here, so that we skip commits that may be tagged
+	// with shipit IDs, but wouldn't actually come from the source
+	// repository. This can happen if a repository is the destination
+	// for multiple repositories, and commits sourced from one repo can
+	// touch those in another. A common source of this is Bazel BUILD
+	// files and go.{mod,sum} files that may be modified independently
+	// in the source and destination repositories.
+	var lastCommit *git.Commit
+	for head := "HEAD"; ; {
+		last, err := dst.Log("-1", "--grep", `^\s*\(fb\)\?shipit-source-id: [a-z0-9]\+$`, head)
+		if err != nil {
+			log.Fatalf("log %s: %v", dst, err)
+		}
+		if len(last) == 0 {
+			break
+		}
+		applies, err := rules.isCommitApplicable(last[0], dst)
+		if err != nil {
+			log.Fatalf("isCommitApplicable %s: %v", last[0], err)
+		}
+		if applies {
+			lastCommit = last[0]
+			break
+		}
+		log.Printf("commit %s is not applicable to %s: skipping", last[0], dst)
+		head = last[0].Digest.Hex() + "^"
 	}
 	var commits []*git.Commit
-	if len(last) == 0 {
+	if lastCommit == nil {
 		log.Printf("performing initial sync")
+		var err error
 		commits, err = src.Log("--no-merges")
 		if err != nil {
 			log.Fatalf("log %s: %v", src, err)
 		}
 	} else {
-		log.Printf("synchronizing: last diff: %v, source: %v", last[0].Digest, last[0].ShipitID())
-		ids := last[0].ShipitID()
+		log.Printf("synchronizing: last diff: %v, source: %v", lastCommit.Digest, lastCommit.ShipitID())
+		ids := lastCommit.ShipitID()
 		if len(ids) == 0 {
-			log.Fatalf("no fbshipid-resource-id found in commit: %+v", last[0])
+			log.Fatalf("no fbshipid-resource-id found in commit: %+v", lastCommit)
 		}
 		// When a commit is a squash of multiple commits, they are sorted in
 		// ascending chronological order. So the last ID is the one we should sync
 		// from.
 		newestID := ids[len(ids)-1]
+		var err error
 		commits, err = src.Log(newestID+"..master", "--ancestry-path", "--no-merges")
 		if err != nil {
 			log.Fatalf("log %s: %v", src, err)
 		}
 	}
+
 	// Filter out commits which are themselves copies, so that
 	// we can properly support multi-way syncing.
 	// We also filter out commits that match any stripped commits.
@@ -312,11 +289,9 @@ commitsLoop:
 		if len(commit.ShipitID()) > 0 {
 			continue
 		}
-		for _, stripped := range stripCommits {
-			if strings.HasPrefix(commit.Digest.Hex(), stripped) {
-				log.Debug.Printf("commit %s: stripped by strip-commit rule", commit.Digest)
-				continue commitsLoop
-			}
+		if rules.isStripped(commit) {
+			log.Debug.Printf("commit %s: stripped by strip-commit rule", commit.Digest)
+			continue commitsLoop
 		}
 		commits = append(commits, commit)
 	}
@@ -340,27 +315,16 @@ commitsLoop:
 		stripMessage := true
 	diffloop:
 		for _, diff := range patch.Diffs {
-			for _, r := range strip {
-				if r.MatchString(diff.Path) {
-					log.Debug.Printf("file %s matches rule %s: stripping", diff.Path, r)
-					continue diffloop
-				}
+			if match, re := rules.isPathStripped(diff.Path); match {
+				log.Debug.Printf("file %s matches rule %s: stripping", diff.Path, re)
+				continue diffloop
 			}
-			var matchesStripMessagePaths bool
-			for _, r := range stripMessagePaths {
-				if r.MatchString(diff.Path) {
-					log.Debug.Printf("file %s matches rule %s for stripping commit messages", diff.Path, r)
-					matchesStripMessagePaths = true
-				}
-			}
-			if !matchesStripMessagePaths {
+			if match, re := rules.isMessagePathStripped(diff.Path); match {
+				log.Debug.Printf("file %s matches rule %s for stripping commit messages", diff.Path, re)
+			} else {
 				stripMessage = false
 			}
-			for _, r := range rewrite {
-				if r.pathRe.MatchString(diff.Path) {
-					diff.Body = r.rewrite(diff.Body)
-				}
-			}
+			rules.rewriteDiff(&diff)
 			diffs = append(diffs, diff)
 		}
 		if len(diffs) == 0 {
@@ -387,7 +351,7 @@ commitsLoop:
 				continue
 			}
 			// Copy any LFS objects that were touched by this change.
-			// Doing it this way alllows us to download only LFS objects
+			// Doing it this way allows us to download only LFS objects
 			// that actually need to be transferred.
 			paths := patch.Paths()
 			ptrs, err := dst.ListLFSPointers()
@@ -432,3 +396,127 @@ func parseSpec(spec string) (url, prefix, branch string) {
 	}
 	panic("not reached")
 }
+
+type rewriteRule struct {
+	pathRe *regexp.Regexp // matched against the pathname
+	oldRe  *regexp.Regexp // matched against each line in the file
+	new    []byte         // replacement
+}
+
+func parseRewriteRule(rule string) (r rewriteRule) {
+	parts := strings.SplitN(rule, ":", 2)
+	if len(parts) != 2 {
+		log.Fatalf("invalid rewrite rule %s", rule)
+	}
+	var err error
+	if r.pathRe, err = regexp.Compile(parts[0]); err != nil {
+		log.Fatalf("rewrite: invalid path regexp %s: %s", parts[0], err)
+	}
+	if len(parts[1]) < 3 {
+		log.Fatalf("rewrite: rule '%s' must be of form rewrite:pathre:/from_re/to_re/", rule)
+	}
+	sep := parts[1][0:1]
+	parts = strings.Split(parts[1][1:], sep)
+	if len(parts) != 3 || parts[2] != "" {
+		log.Fatalf("rewrite: rule '%s' must be of form rewrite:pathre:/from_re/to_re/", rule)
+	}
+	if r.oldRe, err = regexp.Compile(parts[0]); err != nil {
+		log.Fatalf("rewrite: invalid 'from' regexp %s: %s", parts[0], err)
+	}
+	r.new = []byte(parts[1])
+	return r
+}
+
+func (r *rewriteRule) rewrite(diff []byte) []byte {
+	result := bytes.Buffer{}
+	for _, line := range bytes.Split(diff, []byte("\n")) {
+		line = r.oldRe.ReplaceAll(line, r.new)
+		result.Write(line)
+		result.WriteByte('\n')
+	}
+	return result.Bytes()
+}
+
+type rules struct {
+	strip             []*regexp.Regexp
+	stripMessagePaths []*regexp.Regexp
+	// We store strip prefixes as strings since digesters refuse
+	// to parse odd-length hex strings and git typically gives out
+	// a prefix with 7 digits.
+	stripCommits []string
+	rewrite      []rewriteRule
+}
+
+// isStripped returns whether this commit matches the strip rules of
+// the rule set r.
+func (r rules) isStripped(c *git.Commit) bool {
+	for _, stripped := range r.stripCommits {
+		if strings.HasPrefix(c.Digest.Hex(), stripped) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPathStripped returns whether the provided path is stripped by the
+// ruleset's strip path rules.
+func (r rules) isPathStripped(path string) (bool, *regexp.Regexp) {
+	for _, re := range r.strip {
+		if re.MatchString(path) {
+			return true, re
+		}
+	}
+	return false, nil
+}
+
+// isMessagePathStripped returns whether the provided path is stripped
+// by the ruleset's message strip rules.
+func (r rules) isMessagePathStripped(path string) (bool, *regexp.Regexp) {
+	for _, re := range r.stripMessagePaths {
+		if re.MatchString(path) {
+			return true, re
+		}
+	}
+	return false, nil
+}
+
+// rewriteDiff applies the rulesets rewrite rules to the provided diff.
+func (r rules) rewriteDiff(diff *git.Diff) {
+	for _, r := range r.rewrite {
+		if r.pathRe.MatchString(diff.Path) {
+			diff.Body = r.rewrite(diff.Body)
+		}
+	}
+}
+
+// isCommitApplicable returns whether the provided commit is non-empty
+// in the provided repository and prefix.
+func (r rules) isCommitApplicable(c *git.Commit, src *git.Repo) (bool, error) {
+	if r.isStripped(c) {
+		return false, nil
+	}
+	patch, err := src.Patch(c.Digest, "")
+	if err != nil {
+		return false, err
+	}
+	var ndiff int
+	for _, diff := range patch.Diffs {
+		if match, _ := r.isPathStripped(diff.Path); match {
+			continue
+		}
+		ndiff++
+	}
+	return ndiff > 0, nil
+}
+
+/*
+func isApplicableCommit(c *git.Commit, stripCommits []string) bool {
+	for _, stripped := range stripCommits {
+			if strings.HasPrefix(c.Digest.Hex(), stripped) {
+				return false
+			}
+	}
+	patch, err :=
+
+}
+*/
