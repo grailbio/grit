@@ -30,6 +30,16 @@ import (
 	"github.com/grailbio/base/log"
 )
 
+func init() {
+	// If we are testing in a sandboxed environment with no writable /var/tmp,
+	// we can use the TEST_TMPDIR environment variable to override the default
+	// location.
+	testTmp := os.Getenv("TEST_TMPDIR")
+	if testTmp != "" {
+		Dir = filepath.Join(testTmp, "grit")
+	}
+}
+
 // Dir is the directory in which git checkouts are made.
 var Dir = "/var/tmp/grit"
 

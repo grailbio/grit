@@ -96,7 +96,7 @@
 //  # review them internally.
 //  grit $repoB $repoA
 //  # grailXXXXX is the copy of repoA managed by grit
-//  cd /var/tmp/grailXXXXX
+//  cd /var/tmp/grit/grailXXXXX
 //  # Squash changes into one
 //  git reset --soft origin/master && git commit --edit -m"$(git log --reverse HEAD..HEAD@{1})"
 //  # Start a regular code review process.
@@ -266,7 +266,7 @@ func main() {
 		log.Printf("synchronizing: last diff: %v, source: %v", lastCommit.Digest, lastCommit.ShipitID())
 		ids := lastCommit.ShipitID()
 		if len(ids) == 0 {
-			log.Fatalf("no fbshipid-resource-id found in commit: %+v", lastCommit)
+			log.Fatalf("no fbshipit-source-id found in commit: %+v", lastCommit)
 		}
 		// When a commit is a squash of multiple commits, they are sorted in
 		// ascending chronological order. So the last ID is the one we should sync
