@@ -219,7 +219,7 @@ func (r *Repo) Patch(id digest.Digest, dstPrefix string) (Patch, error) {
 	fixPath := func(path string) string {
 		path = strings.TrimPrefix(path, r.prefix)
 		if dstPrefix != "" {
-			path = dstPrefix + "/" + path
+			path = filepath.Join(dstPrefix, path)
 		}
 		return path
 	}
