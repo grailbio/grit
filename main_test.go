@@ -109,7 +109,7 @@ func TestGritRules(t *testing.T) {
 	remote.Git(t, "add", ".")
 	remote.Git(t, "commit", "-a", "-m", "commit 1 to remote")
 	remote.Git(t, "push")
-	g.Run(t, "-push", repoRemote, repoHome+",remote")
+	g.Run(t, "-push", repoRemote, repoHome+",remote/")
 
 	home.Git(t, "pull")
 
@@ -129,7 +129,7 @@ func TestGritRules(t *testing.T) {
 	remote.Git(t, "commit", "-a", "-m", "commit 1 2 remote")
 	remote.Git(t, "push")
 
-	g.Run(t, "-push", repoRemote, repoHome+",remote", "strip:^/BUILD$", "strip:^BUILD/")
+	g.Run(t, "-push", repoRemote, repoHome+",remote/", "strip:^BUILD$")
 
 	home.Git(t, "pull")
 
