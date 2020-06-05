@@ -68,7 +68,7 @@ func TestLog(t *testing.T) {
 	if got, want := patch.Subject, "[PATCH] first commit"; got != want {
 		t.Errorf("got %v, want %v", got, want)
 	}
-	if got, want := patch.Author, `"your name" <you@example.com>`; got != want {
+	if got, want := patch.Author, `your name <you@example.com>`; got != want {
 		t.Errorf("got %v, want %v", got, want)
 	}
 	if got, want := len(patch.Diffs), 1; got != want {
