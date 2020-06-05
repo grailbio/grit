@@ -31,6 +31,9 @@ func TestParsePatch(t *testing.T) {
 	if got, want := patch.ID.Hex(), "b969e1d8eb27e72eee131c1d31398fc3e6ef9c25"; got != want {
 		t.Errorf("got %v, want %v", got, want)
 	}
+	if got, want := patch.Author, `"marius a. eriksen" <marius@grailbio.com>`; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
 	if got, want := patch.Time.Format(time.Kitchen), "11:44AM"; got != want {
 		t.Errorf("got %v, want %v", got, want)
 	}

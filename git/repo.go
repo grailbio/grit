@@ -203,18 +203,6 @@ func (r *Repo) Patch(id digest.Digest, dstPrefix string) (Patch, error) {
 		return Patch{}, fmt.Errorf("parse patch %v: %v", id, err)
 	}
 
-	// Use `git show` to retrieve the author instead of parsing it out of the
-	// `From` header in patch header, because `format-patch` can produce mail
-	// messages that include invalid `From` addresses, e.g. addresses containing
-	// the '[' character. The mail package, used by parsePatchHeader, fails to
-	// parse in these cases.
-	author, err := r.git(nil, "show",
-		"--no-patch", `--format="%an" <%ae>`, id.Hex())
-	if err != nil {
-		return Patch{}, fmt.Errorf("could not get author: %w", err)
-	}
-	patch.Author = strings.TrimSuffix(string(author), "\n")
-
 	err = foreach(rawdiffs, "diff", func(diff []byte) error {
 		header := scanLine(&diff)
 		path := parseDiffHeader(header)
