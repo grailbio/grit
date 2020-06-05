@@ -143,14 +143,10 @@ func parsePatchHeader(b []byte) (Patch, error) {
 	if err != nil {
 		return Patch{}, err
 	}
-	addrs, err := m.Header.AddressList("From")
-	if err != nil {
-		return Patch{}, err
+	p.Author = m.Header.Get("From")
+	if p.Author == "" {
+		return Patch{}, errors.New("patch is missing author")
 	}
-	if len(addrs) != 1 {
-		return Patch{}, errMalformedPatch
-	}
-	p.Author = addrs[0].String()
 	p.Time, err = m.Header.Date()
 	if err != nil {
 		return Patch{}, err
