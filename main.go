@@ -273,7 +273,7 @@ func main() {
 		// from.
 		newestID := ids[len(ids)-1]
 		var err error
-		commits, err = src.Log(newestID+"..master", "--ancestry-path", "--no-merges")
+		commits, err = src.Log(newestID+".."+srcBranch, "--ancestry-path", "--no-merges")
 		if err != nil {
 			log.Fatalf("log %s: %v", src, err)
 		}
